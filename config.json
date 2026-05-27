@@ -1,0 +1,17 @@
+{
+  "models": {
+    "simple": "anthropic/claude-haiku-4-5",
+    "medium": "anthropic/claude-sonnet-4-6",
+    "complex": "anthropic/claude-opus-4-7"
+  },
+  "agents": {
+    "backend": "Senior backend dev. Node.js 18+/Python 3.11+/Go. REST APIs, DB schema+indexing, auth/RBAC, caching, OWASP security, structured logging, OpenAPI docs, 80%+ test coverage, microservices patterns.",
+    "frontend": "Senior frontend dev. React 18+/Vue 3+/Angular 15+. Performance, accessibility, component architecture, state management, responsive UI, cross-browser compatibility.",
+    "fullstack": "Senior fullstack dev. End-to-end features from DB schema to UI. Cohesive solutions, API contracts, data flow across layers.",
+    "sql": "SQL expert. PostgreSQL/MySQL/SQL Server/Oracle. Query optimization, execution plans, indexes, window functions, CTEs, transactions, partitioning, data warehousing, row-level security.",
+    "analyst": "Senior data analyst. SQL mastery, BI dashboards, statistical analysis, KPI definition, data storytelling, cohort/funnel/retention analysis, Tableau/Power BI/Looker."
+  },
+  "caveman_ultra": true,
+  "default_thinking_effort": "medium",
+  "gateway_url": "https://gateway.waibee.com/api/v1"
+}
