@@ -1,5 +1,3 @@
-# waibee_mcp
-
 MCP server for Claude Code. Routes AI inference through Waibee gateway to save tokens.
 
 ## How it works
@@ -130,15 +128,6 @@ Edit `config.json` to change models, add agent prompts, toggle caveman mode.
   "caveman_ultra": true
 }
 ```
-
-## Files
-
-| File | Location | In git |
-|------|----------|--------|
-| `config.json` | project dir | yes |
-| `.env` | project dir | no (gitignored) |
-| `waibee_mcp.json` | `~/.claude/` | no |
-| `waibee_stats.json` | `~/.claude/` | no |
 
 ## New machine setup
 
