@@ -62,16 +62,27 @@ Get the key from Waibee settings in VS Code (Settings → waibeeRouterApiKey).
 
 ### 4. Register in Claude Code
 
-Add to `~/.claude/settings.json` under `mcpServers`:
+Use the `claude mcp add` command — this is the correct way. Do **not** edit `settings.json` manually (Claude Code ignores `mcpServers` there).
 
-```json
-"waibee-mcp": {
-  "command": "python",
-  "args": ["C:\\path\\to\\waibee_mcp\\server.py"]
-}
+```bash
+claude mcp add -s user waibee-mcp python "C:\path\to\waibee_mcp\server.py"
 ```
 
-Replace `C:\\path\\to\\waibee_mcp` with the actual absolute path where you cloned the repo.
+Replace `C:\path\to\waibee_mcp` with the actual absolute path where you cloned the repo.
+
+On Windows with the Store Python stub, use the full path to the real interpreter:
+
+```bash
+claude mcp add -s user waibee-mcp "C:\Users\<you>\AppData\Local\Microsoft\WindowsApps\python.exe" "C:\path\to\waibee_mcp\server.py"
+```
+
+The `-s user` flag registers the server in `~/.claude.json` (user-level, available in all projects). Omit it to register only for the current project. After running, verify with:
+
+```bash
+claude mcp list
+```
+
+`waibee-mcp` should appear as `Connected`.
 
 ### 5. Add to global CLAUDE.md
 
@@ -148,7 +159,8 @@ cp .env.example .env
 # edit .env → set API_KEY=sk_your_key_here
 
 # 4. Register MCP server
-# add waibee-mcp block to ~/.claude/settings.json (see step 4 above)
+claude mcp add -s user waibee-mcp python "C:\path\to\waibee_mcp\server.py"
+# verify: claude mcp list → waibee-mcp should show Connected
 
 # 5. Add Claude Code instruction
 # add waibee_mcp section to ~/.claude/CLAUDE.md (see step 5 above)
