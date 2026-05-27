@@ -129,6 +129,10 @@ Edit `config.json` to change models, add agent prompts, toggle caveman mode.
 }
 ```
 
+## Logs
+
+Requests and errors logged to `logs/waibee_mcp.log` (rotating, max 5MB × 3 files). Check first when debugging gateway errors.
+
 ## New machine setup
 
 ```bash

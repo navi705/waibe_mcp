@@ -1,8 +1,23 @@
 import httpx
+import logging
+import logging.handlers
+from pathlib import Path
 from config import get_config, get_api_key
 import stats as stats_module
 
 THINKING_BUDGETS = {"low": 1000, "medium": 5000, "high": 10000}
+
+LOG_PATH = Path(__file__).parent / "logs" / "waibee_mcp.log"
+LOG_PATH.parent.mkdir(exist_ok=True)
+
+logger = logging.getLogger("waibee_mcp")
+if not logger.handlers:
+    logger.setLevel(logging.DEBUG)
+    handler = logging.handlers.RotatingFileHandler(
+        LOG_PATH, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logger.addHandler(handler)
 
 
 async def call(
@@ -41,17 +56,37 @@ async def call(
         else:
             payload["reasoning"] = {"effort": thinking_effort}
 
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(
-            f"{gateway_url}/chat/completions",
-            headers=headers,
-            json=payload,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+    logger.info(f"→ {model} | thinking={thinking_effort} | msgs={len(msgs)}")
+
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            resp = await client.post(
+                f"{gateway_url}/chat/completions",
+                headers=headers,
+                json=payload,
+            )
+            logger.info(f"← status={resp.status_code} | model={model}")
+
+            if resp.status_code != 200:
+                logger.error(f"Gateway error {resp.status_code}: {resp.text}")
+                resp.raise_for_status()
+
+            data = resp.json()
+
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTPStatusError: {e.response.status_code} — {e.response.text}")
+        raise
+    except Exception as e:
+        logger.error(f"Request failed: {type(e).__name__}: {e}")
+        raise
 
     usage = data.get("usage", {})
     cost = (usage.get("cost_details") or {}).get("upstream_inference_cost", 0) or 0
+    logger.info(
+        f"✓ in={usage.get('prompt_tokens', 0)} out={usage.get('completion_tokens', 0)} "
+        f"cost=${cost:.6f}"
+    )
+
     stats_module.record(
         model=model,
         input_tokens=usage.get("prompt_tokens", 0),
@@ -68,9 +103,17 @@ async def get_models() -> list:
     api_key = get_api_key()
 
     headers = {"Authorization": f"Bearer {api_key}"}
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(f"{gateway_url}/models", headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
+    logger.info("→ GET /models")
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(f"{gateway_url}/models", headers=headers)
+            logger.info(f"← /models status={resp.status_code}")
+            if resp.status_code != 200:
+                logger.error(f"Models error {resp.status_code}: {resp.text}")
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        logger.error(f"get_models failed: {e}")
+        raise
 
     return data.get("data", [])
