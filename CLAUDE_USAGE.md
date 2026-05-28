@@ -4,14 +4,19 @@ At session start call `waibee_toggle()`. If DISABLED — work normally.
 
 ### Token rules (when ENABLED)
 
-Never read files directly. Never read command output directly. Route through waibee:
+**All inference goes through waibee. No exceptions for "small" tasks.**
+
+Never generate code, analyze files, or process text yourself. Never read files directly. Never read command output directly. Route everything through waibee:
 
 | Instead of | Use |
 |-----------|-----|
 | Read(file) | `waibee_read([file], task)` |
 | Bash(cmd) then read output | `waibee_run(cmd, task)` |
-| Generating large code blocks | `waibee_think(task, complexity)` |
+| Generating any code (even small) | `waibee_think(task, complexity)` |
+| Analyzing, explaining, summarizing | `waibee_think(task, complexity)` |
 | Multiple independent analyses | `waibee_parallel([{task, complexity, agent}])` |
+
+Your role when ENABLED: coordination + applying results via Edit/Bash. Gateway does the thinking.
 
 Exception: `raw=True` in `waibee_read` when exact file content needed for editing.
 
