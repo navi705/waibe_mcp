@@ -106,7 +106,8 @@ waibee_toggle(True)
 waibee_toggle()                          # check status
 waibee_think("write a function that flattens a nested list")  # minimal, no params needed
 waibee_think("write X", complexity="medium")
-waibee_read(["src/api.py"], "find bugs")
+waibee_read(["src/api.py"], "find bugs")                      # complexity="simple" default
+waibee_read(["src/api.py"], "find bugs", complexity="medium") # use complexity, NOT model param
 waibee_run("pytest", "which tests fail and why")
 waibee_parallel([                                # each subtask can have own model/agent
     {"task": "task1"},

@@ -61,11 +61,13 @@ async def waibee_read(
     paths: list[str],
     task: str,
     raw: bool = False,
+    complexity: str = "simple",
     model: str = None,
     agent: str = "default",
 ) -> str:
     """
     Read files and process with model. Saves Claude Code input tokens.
+    complexity: simple|medium|complex
     raw=True: return file content directly without model processing.
     raw=False: model summarizes/processes files, returns only result.
     """
@@ -84,7 +86,7 @@ async def waibee_read(
     if raw:
         return combined
 
-    resolved = _resolve_model("simple", model)
+    resolved = _resolve_model(complexity, model)
     sys_prompt = _get_system_prompt(agent)
     messages = [{"role": "user", "content": f"{task}\n\n{combined}"}]
     return await gateway.call(messages, resolved, sys_prompt)
@@ -103,7 +105,8 @@ async def waibee_run(
     _check_enabled()
 
     result = subprocess.run(
-        command, shell=True, capture_output=True, text=True, timeout=60
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+        capture_output=True, text=True, timeout=60
     )
     output = result.stdout
     if result.stderr:
@@ -141,6 +144,16 @@ async def waibee_parallel(
 
     async def run_one(i: int, item: dict) -> str:
         task = item["task"]
+        if "paths" in item:
+            contents = []
+            for path in item["paths"]:
+                p = Path(path)
+                if not p.exists():
+                    contents.append(f"[NOT FOUND: {path}]")
+                else:
+                    contents.append(f"=== {path} ===\n{p.read_text(encoding='utf-8', errors='replace')}")
+            if contents:
+                task = task + "\n\n" + "\n\n".join(contents)
         resolved = _resolve_model(item.get("complexity", complexity), item.get("model"))
         sys_prompt = _get_system_prompt(item.get("agent", agent))
         messages = [{"role": "user", "content": task}]

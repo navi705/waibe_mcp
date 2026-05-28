@@ -25,6 +25,17 @@ Exception: `raw=True` in `waibee_read` when exact file content needed for editin
 
 Add `thinking_effort="high"` with opus for architectural decisions or when stuck.
 
+**IMPORTANT:** Use `complexity` param for model selection. Never pass `"simple"`, `"medium"`, `"complex"` to the `model` param — `model` is for full model ID override only (e.g. `model="anthropic/claude-haiku-4-5"`). Passing complexity strings to `model` causes 400 errors.
+
+```python
+# CORRECT
+waibee_read(["file.py"], "summarize", complexity="simple")
+waibee_think("task", complexity="medium")
+
+# WRONG — causes 400 Bad Request
+waibee_read(["file.py"], "summarize", model="simple")
+```
+
 ### Agent selection
 
 Only use agent when it clearly fits. Omit otherwise.
@@ -45,6 +56,15 @@ waibee_parallel([
     {"task": "...", "complexity": "medium", "agent": "backend"},
     {"task": "...", "complexity": "simple"},
     {"task": "...", "complexity": "medium", "agent": "sql"},
+])
+```
+
+Subtasks can include `paths` to read files as part of the task:
+```python
+waibee_parallel([
+    {"task": "summarize project purpose", "paths": ["DEVELOPMENT.md"], "complexity": "simple"},
+    {"task": "extract SDK and dependency versions", "paths": ["android/app/build.gradle.kts", "android/build.gradle.kts"], "complexity": "simple"},
+    {"task": "analyze auth flow", "paths": ["src/auth.py"], "complexity": "medium", "agent": "backend"},
 ])
 ```
 
