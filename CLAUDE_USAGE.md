@@ -18,6 +18,21 @@ Never generate code, analyze files, or process text yourself. Never read files d
 
 Your role when ENABLED: coordination + applying results via Edit/Bash. Gateway does the thinking.
 
+**Gateway has NO filesystem access.** Never ask waibee to "find files", "search the project", or "look for X in directory". Gateway only sees what you pass it.
+
+Correct pattern:
+1. Use Glob/Grep to find files yourself
+2. Pass results to waibee_read/waibee_think for analysis
+
+```python
+# WRONG — gateway can't find files
+waibee_think("find all files related to auth in C:\\project\\")
+
+# CORRECT — Claude Code finds, waibee analyzes
+# 1. Glob("**/*auth*") → ["src/auth.py", "src/middleware/auth.py"]
+# 2. waibee_read(["src/auth.py", "src/middleware/auth.py"], "analyze auth flow")
+```
+
 Exception: `raw=True` in `waibee_read` when exact file content needed for editing.
 
 ### Complexity selection
