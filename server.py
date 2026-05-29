@@ -353,6 +353,7 @@ BASH_BLOCKLIST = [
 
     # ── Interactive / long-running blockers ───────────────────────────────────
     r"^\s*python(\d(\.\d+)?)?\s*$",                                         # Bare python → MS Store/REPL
+    r"(?<![\w/\\])python(\d(\.\d+)?)?\s+(-c|-m\s+\w)",                     # python -c / python -m without full path
     r"^\s*(node|irb|pry|ipython|bash|sh|pwsh|powershell|cmd)\s*$",          # Interactive REPL
     r"\btail\s+-f\b|Get-Content\b.*-Wait\b",                                # Follows file forever
     r"^\s*watch\b",                                                         # Loops forever
