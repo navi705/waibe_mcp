@@ -312,7 +312,7 @@ async def _run_agent_loop(
     model: str,
     sys_prompt: str,
     thinking_effort: str = None,
-    max_steps: int = 20,
+    max_steps: int = 40,
     workdir: str = None,
     context: str = None,
 ) -> str:
@@ -369,7 +369,17 @@ async def _run_agent_loop(
 
         messages.extend(tool_results)
 
-    final = resp.get("content") or "(no response)"
+    final = resp.get("content")
+    if not final:
+        # hit max_steps mid-loop — ask model to summarize what was done
+        logger.warning(f"[agent] max_steps={max_steps} reached, requesting summary")
+        messages.append({"role": "user", "content": "You have reached the step limit. Summarize what you have done so far and what remains."})
+        summary_resp = await gateway.call_with_tools(
+            messages=messages, model=model, tools=AGENT_TOOLS,
+            system_prompt=sys_prompt, thinking_effort=thinking_effort,
+        )
+        total_cost += summary_resp["cost"]
+        final = summary_resp.get("content") or "(no response — max steps reached)"
     logger.info(f"[agent] done steps={step} cost=${total_cost:.6f}")
     return f"{final}\n\n[steps: {step}, cost: ${total_cost:.6f}]"
 
@@ -381,7 +391,7 @@ async def waibee_agent(
     model: str = None,
     thinking_effort: str = None,
     agent: str = "default",
-    max_steps: int = 20,
+    max_steps: int = 40,
     workdir: str = None,
     context: str = None,
     system_prompt: str = None,
@@ -402,7 +412,7 @@ async def waibee_agent(
 @mcp.tool()
 async def waibee_agents(
     agents: list[dict],
-    max_steps: int = 20,
+    max_steps: int = 40,
 ) -> str:
     """
     Run multiple independent agentic loops in parallel.
