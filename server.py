@@ -2,6 +2,7 @@ import asyncio
 import glob as glob_module
 import json
 import os
+import re
 import subprocess
 from datetime import date
 from pathlib import Path
@@ -255,8 +256,133 @@ AGENT_TOOLS = [
     },
 ]
 
+# Dangerous command patterns for bash_run blocklist (case-insensitive, matched anywhere in command).
+# Bypass with allow_dangerous=True in waibee_agent / waibee_agents.
+BASH_BLOCKLIST = [
+    # ── Filesystem destruction ────────────────────────────────────────────────
+    r"rm\s+-rf",                                                            # rm -rf
+    r"Remove-Item\s+.*-Recurse.*-Force|Remove-Item\s+.*-Force.*-Recurse",  # PS Remove-Item -Recurse -Force
+    r"Remove-Item\b.*\\?(C:\\?|\$env:SystemRoot|\$env:windir|%windir%|%systemroot%)",  # Wipes Windows dir
+    r"del\s+/f\s+/s",                                                       # Windows del /f /s
+    r"rd\s+/s\s+/q",                                                        # Windows rd /s /q
+    r"\bcipher\s+/w",                                                       # Secure overwrite free space
+    r"\bsdelete(64)?\b.*-[psz]",                                            # Sysinternals secure delete
+    r"fsutil\s+file\s+setzerodata",                                         # Zeroes file contents
+    r"fsutil\s+volume\s+(dismount|allocationreport)",                       # Dismounts live volume
+    r"dd\s+.*of=/dev/(sd[a-z]|nvme|disk)",                                  # Raw disk overwrite
+    r"\b(takeown|icacls)\b.*(\\Windows|\\System32|\\Program Files)",        # Hijacks system ACLs
+    r">\s*\$PROFILE|Set-Content\s+.*\$PROFILE",                             # Overwrites PS profile
+    r"\bdiskpart\b",                                                        # diskpart
+    r"\bformat\b.*[a-z]:[/\\]",                                             # format drive
 
-def _exec_tool(name: str, args: dict, workdir: str = None) -> str:
+    # ── Git history destruction ───────────────────────────────────────────────
+    r"git\s+push",                                                          # git push (any variant)
+    r"git\b.*--force",                                                      # git.*--force
+    r"git\s+reset\s+--hard\b",                                              # git reset --hard
+    r"git\s+clean\s+-[fdx]{2,}",                                            # git clean -fdx
+    r"git\s+checkout\s+\.\s*$",                                             # git checkout .
+    r"git\s+rebase\s+.*(-i\s+--root|--force)",                              # Rewrites history
+    r"git\s+filter-(branch|repo)\b",                                        # Rewrites history globally
+    r"git\s+update-ref\s+-d\b",                                             # Deletes branch ref
+    r"git\s+reflog\s+(delete|expire)\b",                                    # Destroys recovery log
+    r"git\s+gc\s+.*--prune=(now|all)",                                      # Drops unreachable objects
+    r"git\s+branch\s+-D\b",                                                 # Force-deletes branch
+    r"git\s+push\s+.*--delete\b",                                           # Deletes remote branch/tag
+    r"git\s+remote\s+(remove|rm|set-url)\b",                                # Hijacks remote
+    r"git\s+config\s+.*(core\.hooksPath|alias\.)",                          # Plants malicious hooks
+    r"git\s+submodule\s+deinit\s+--force",                                  # Removes submodule trees
+
+    # ── System damage ─────────────────────────────────────────────────────────
+    r"(reg\s+(add|delete|import)|Set-ItemProperty|New-ItemProperty|Remove-ItemProperty)\b.*HK(LM|CU|CR|U)",  # Registry mutation
+    r"(Stop-Service|sc(\.exe)?\s+(stop|delete|config)|net\s+stop)\b.*(Defender|WinDefend|MpsSvc|wuauserv|BITS|EventLog|LanmanServer)",  # Kills critical service
+    r"Set-MpPreference\b.*-Disable",                                        # Disables Defender
+    r"Add-MpPreference\b.*-ExclusionPath",                                  # Whitelists malware path
+    r"\bbcdedit\b",                                                         # Boot config modification
+    r"DISM\b.*(RestoreHealth|Remove-Package|Disable-Feature)",              # System feature mutation
+    r"\bpnputil\b.*[-/]i",                                                  # Driver install
+    r"\bvssadmin\s+delete\s+shadows",                                       # Destroys shadow copies (ransomware TTP)
+    r"\bwbadmin\s+delete",                                                  # Destroys backup catalog
+    r"\bmanage-bde\b.*-(off|lock)",                                         # BitLocker manipulation
+    r"\bshutdown\b",                                                        # shutdown
+    r"restart-computer",                                                    # PS Restart-Computer
+
+    # ── Package managers (system-wide risk) ───────────────────────────────────
+    r"npm\s+(install|i)\s+(-g|--global)\b",                                 # Global npm install
+    r"npm\s+(audit\s+fix\s+--force|update\s+--force)",                      # Force dep bump
+    r"\b(choco|scoop|winget)\s+(install|upgrade|uninstall)\b",              # System package mutation
+    r"(Iex|Invoke-Expression)\b.*(Invoke-WebRequest|Invoke-RestMethod|iwr|irm|curl|wget)",  # Remote script exec
+    r"(iwr|irm)\b.*\|\s*iex",                                               # Pipe-to-iex
+    r"curl\s+.*\|\s*(sh|bash|powershell|pwsh)",                             # Pipe-to-shell
+    r"Install-Module\b.*-Scope\s+AllUsers",                                 # System-wide PS module
+    r"Set-PSRepository\b.*-InstallationPolicy\s+Trusted",                   # Lowers module trust
+
+    # ── Network / firewall / exfiltration ─────────────────────────────────────
+    r"netsh\s+advfirewall\s+set\s+.*state\s+off",                           # Disables firewall
+    r"netsh\s+advfirewall\s+firewall\s+add\s+rule",                         # Adds firewall rule
+    r"Set-NetFirewallProfile\b.*-Enabled\s+False",                          # Disables firewall
+    r"\bNew-NetFirewallRule\b",                                             # Adds firewall rule
+    r"Add-Content\s+.*\\drivers\\etc\\hosts",                               # hosts file poisoning
+    r"(Invoke-WebRequest|Invoke-RestMethod|curl|wget)\b.*-(Method\s+)?(Post|Put)\b.*(\$env:|\.env|id_rsa|\.aws|\.ssh)",  # Exfil secrets
+
+    # ── Credential theft ──────────────────────────────────────────────────────
+    r"(Get-Content|cat|type|gc)\s+.*\.(env|pem|key|ppk)(\b|['\"])",        # Reads secret file
+    r"(Get-Content|cat|gc|type)\s+.*[/\\]\.ssh[/\\](id_rsa|id_ed25519|id_ecdsa)\b",  # SSH private key
+    r"(Get-Content|cat|gc)\s+.*[/\\]\.aws[/\\]credentials",                # AWS creds
+    r"\b(cmdkey|vaultcmd)\b\s+/list",                                       # Enumerates credentials
+    r"ConvertFrom-SecureString\b",                                          # Extracts plaintext cred
+    r"\b(mimikatz|procdump)\b.*lsass",                                      # LSASS dump
+    r"reg\s+save\s+HK(LM|U)\\(SAM|SYSTEM|SECURITY)",                       # Hive dump
+
+    # ── Process killing ───────────────────────────────────────────────────────
+    r"Stop-Process\b.*-Name\s+\*",                                          # Kills all processes
+    r"(Stop-Process|taskkill)\b.*(lsass|csrss|wininit|services|smss|winlogon|MsMpEng)\b",  # Kills system process
+    r"taskkill\b.*/F\s+/IM\s+\*",                                           # Mass process termination
+
+    # ── Persistence ───────────────────────────────────────────────────────────
+    r"\bschtasks\b.*/create",                                               # Scheduled task persistence
+    r"Register-ScheduledTask\b|New-ScheduledTask\b",                        # Scheduled task persistence
+    r"reg\s+add\b.*(CurrentVersion\\Run|RunOnce|Winlogon|Image File Execution Options)",  # Autorun persistence
+    r"\bNew-Service\b|sc(\.exe)?\s+create\b",                               # Service persistence
+
+    # ── PowerShell bypass ─────────────────────────────────────────────────────
+    r"Set-ExecutionPolicy\b.*(Bypass|Unrestricted)\b",                      # Lowers exec policy
+    r"powershell(\.exe)?\b.*(ExecutionPolicy\s+Bypass|-ep\s+bypass)",       # Bypass exec policy
+    r"powershell(\.exe)?\b.*-(EncodedCommand|enc)\b",                       # Obfuscated command
+    r"\[Reflection\.Assembly\]::Load\b|Add-Type\b.*-TypeDefinition",        # In-memory .NET load
+    r"\bInvoke-Expression\b|\biex\b\s+\$",                                  # Dynamic code execution
+
+    # ── Interactive / long-running blockers ───────────────────────────────────
+    r"^\s*python(\d(\.\d+)?)?\s*$",                                         # Bare python → MS Store/REPL
+    r"^\s*(node|irb|pry|ipython|bash|sh|pwsh|powershell|cmd)\s*$",          # Interactive REPL
+    r"\btail\s+-f\b|Get-Content\b.*-Wait\b",                                # Follows file forever
+    r"^\s*watch\b",                                                         # Loops forever
+    r"\bping\b(?!.*-n\s+\d+)(?!.*-c\s+\d+)",                               # Infinite ping (Windows default)
+    r"Start-Sleep\b.*-Seconds\s+(\d{4,})",                                  # Very long sleep
+    r"\bRead-Host\b|\bpause\b\s*$|cmd\b.*/k\b",                             # Waits for stdin
+    r"\b(npm|yarn|pnpm)\s+(start|run\s+(dev|serve|watch))\b",               # Dev server (long-running)
+    r"\b(flask|django-admin)\s+run\b|\buvicorn\b|\bgunicorn\b",             # Python server
+    r"\bdocker\s+(run(?!.*--rm.*-d)|exec\s+-it|attach)\b",                  # Interactive container
+    r"\bssh\b(?!.*\b(-o\s+BatchMode=yes|-T)\b)",                            # Interactive SSH
+    r"\btcpdump\b|\bwireshark\b",                                           # Sniffer
+
+    # ── SQL destruction ───────────────────────────────────────────────────────
+    r"DROP\s+TABLE",                                                        # SQL DROP TABLE
+    r"DROP\s+DATABASE",                                                     # SQL DROP DATABASE
+]
+
+# Pre-compiled for performance
+_BASH_BLOCKLIST_RE = [re.compile(p, re.IGNORECASE) for p in BASH_BLOCKLIST]
+
+
+def _check_bash_blocklist(command: str) -> str | None:
+    """Return matched pattern string if command is blocked, else None."""
+    for pattern, compiled in zip(BASH_BLOCKLIST, _BASH_BLOCKLIST_RE):
+        if compiled.search(command):
+            return pattern
+    return None
+
+
+def _exec_tool(name: str, args: dict, workdir: str = None, allow_dangerous: bool = False) -> str:
     try:
         if name == "read_file":
             return Path(args["path"]).read_text(encoding="utf-8", errors="replace")
@@ -274,15 +400,25 @@ def _exec_tool(name: str, args: dict, workdir: str = None) -> str:
             return f"Written {len(args['content'])} chars to {p}"
 
         elif name == "bash_run":
-            result = subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", args["command"]],
-                capture_output=True, text=True, timeout=60,
-                cwd=workdir,
-            )
-            out = result.stdout
-            if result.stderr:
-                out += f"\nSTDERR:\n{result.stderr}"
-            return out or f"(exit {result.returncode})"
+            if not allow_dangerous:
+                matched = _check_bash_blocklist(args["command"])
+                if matched is not None:
+                    return (
+                        f"[BLOCKED] dangerous command: {matched}. "
+                        "Use workdir restrictions or request user confirmation."
+                    )
+            try:
+                result = subprocess.run(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-Command", args["command"]],
+                    capture_output=True, text=True, timeout=30,
+                    cwd=workdir,
+                )
+                out = result.stdout
+                if result.stderr:
+                    out += f"\nSTDERR:\n{result.stderr}"
+                return out or f"(exit {result.returncode})"
+            except subprocess.TimeoutExpired:
+                return "[TIMEOUT] command exceeded 30s — killed. Avoid long-running or interactive commands."
 
         elif name == "glob_search":
             root = args.get("root", workdir or ".")
@@ -315,6 +451,7 @@ async def _run_agent_loop(
     max_steps: int = 40,
     workdir: str = None,
     context: str = None,
+    allow_dangerous: bool = False,
 ) -> str:
     content = task
     if context:
@@ -355,7 +492,7 @@ async def _run_agent_loop(
                 args = {}
             args_preview = str(args)[:120]
             logger.info(f"[agent] step={step} tool={name} args={args_preview}")
-            result = await asyncio.to_thread(_exec_tool, name, args, workdir)
+            result = await asyncio.to_thread(_exec_tool, name, args, workdir, allow_dangerous)
             result_preview = result[:80].replace("\n", "\\n")
             logger.info(f"[agent] step={step} tool={name} result={result_preview}")
             MAX_TOOL_RESULT = 8000
@@ -395,6 +532,7 @@ async def waibee_agent(
     workdir: str = None,
     context: str = None,
     system_prompt: str = None,
+    allow_dangerous: bool = False,
 ) -> str:
     """
     Agentic loop: model autonomously reads/writes files and runs commands until task is done.
@@ -402,21 +540,29 @@ async def waibee_agent(
     thinking_effort: low|medium|high (use with complex/opus for hard problems)
     workdir: restrict write_file to this directory
     context: optional chat context to inject
+    allow_dangerous: set True to bypass bash_run blocklist (default False). Blocklist blocks
+        destructive commands: git push, rm -rf, Remove-Item -Recurse -Force, format, diskpart,
+        DROP TABLE/DATABASE, del /f /s, rd /s /q, shutdown, restart-computer, and any git
+        command with --force.
     """
     _check_enabled()
     resolved = _resolve_model(complexity, model)
     sys_prompt = _get_system_prompt(agent, system_prompt)
-    return await _run_agent_loop(task, resolved, sys_prompt, thinking_effort, max_steps, workdir, context)
+    return await _run_agent_loop(
+        task, resolved, sys_prompt, thinking_effort, max_steps, workdir, context, allow_dangerous
+    )
 
 
 @mcp.tool()
 async def waibee_agents(
     agents: list[dict],
     max_steps: int = 40,
+    allow_dangerous: bool = False,
 ) -> str:
     """
     Run multiple independent agentic loops in parallel.
-    Each agent dict: {task, complexity?, model?, thinking_effort?, agent?, workdir?, context?, system_prompt?}
+    Each agent dict: {task, complexity?, model?, thinking_effort?, agent?, workdir?, context?, system_prompt?, allow_dangerous?}
+    allow_dangerous: global default; per-agent allow_dangerous overrides this.
     """
     _check_enabled()
 
@@ -427,6 +573,7 @@ async def waibee_agents(
         agent_name = item.get("agent", "default")
         timeout = item.get("timeout", 300)
         retries = item.get("retries", 1)
+        item_allow_dangerous = item.get("allow_dangerous", allow_dangerous)
 
         last_error = None
         for attempt in range(1, retries + 2):
@@ -440,6 +587,7 @@ async def waibee_agents(
                         max_steps=item.get("max_steps", max_steps),
                         workdir=item.get("workdir"),
                         context=item.get("context"),
+                        allow_dangerous=item_allow_dangerous,
                     ),
                     timeout=timeout,
                 )
