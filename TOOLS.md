@@ -29,11 +29,11 @@ waibee_think(
 |-------|-------|----------|
 | `simple` | claude-haiku-4-5 | Quick fixes, short snippets, formatting |
 | `medium` | claude-sonnet-4-6 | General coding, refactors, debugging |
-| `complex` | claude-opus-4-7 | Architecture, hard bugs, stuck situations |
+| `complex` | claude-opus-4-8 | Architecture, hard bugs, stuck situations |
 | `auto` | sonnet (default) | Let it default to medium |
 
 **model** — explicit model override, bypasses complexity. Use for experiments.
-Example: `model="anthropic/claude-opus-4-7"` or any model from `waibee_models()`.
+Example: `model="anthropic/claude-opus-4-8"` or any model from `waibee_models()`.
 
 **thinking_effort** — enables extended reasoning (more accurate, costs more tokens):
 | Value | Budget tokens | Use when |
@@ -257,7 +257,7 @@ Returns a newline-separated list of model IDs. Use to discover available models 
 waibee_models()
 # → anthropic/claude-haiku-4-5
 #   anthropic/claude-sonnet-4-6
-#   anthropic/claude-opus-4-7
+#   anthropic/claude-opus-4-8
 #   openai/gpt-4o
 #   google/gemini-2.0-flash
 #   ... etc

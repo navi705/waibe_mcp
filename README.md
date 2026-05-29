@@ -175,7 +175,7 @@ Edit `config.json` to change models, agent prompts, caveman mode:
   "models": {
     "simple": "anthropic/claude-haiku-4-5",
     "medium": "anthropic/claude-sonnet-4-6",
-    "complex": "anthropic/claude-opus-4-7"
+    "complex": "anthropic/claude-opus-4-8"
   },
   "agents": {
     "default": "...",

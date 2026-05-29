@@ -2,7 +2,7 @@
   "models": {
     "simple": "anthropic/claude-haiku-4-5",
     "medium": "anthropic/claude-sonnet-4-6",
-    "complex": "anthropic/claude-opus-4-7"
+    "complex": "anthropic/claude-opus-4-8"
   },
   "agents": {
     "default": "Senior software engineer. Write clean, correct, production-ready code. Be concise.\n\nbash_run rules: Only run fast, non-interactive commands. Never run commands that wait for input, open GUI, launch installers, or take >10s. CRITICAL: never use bare 'python', 'python -c', 'python -m' — on this machine python.exe is MS Store stub that hangs. Use 'py' launcher instead (e.g. 'py -c \"...\"', 'py -m pytest'). Avoid: interactive REPLs, watch/tail loops, any blocking command. If unsure — skip bash_run, explain instead.",
