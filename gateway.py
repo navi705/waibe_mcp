@@ -10,7 +10,7 @@ import stats as stats_module
 THINKING_BUDGETS = {"low": 1000, "medium": 5000, "high": 10000}
 
 # Split timeouts: connect fast-fail, read generous for LLM streams, write moderate, pool tight
-GATEWAY_TIMEOUT = httpx.Timeout(connect=10.0, read=90.0, write=30.0, pool=5.0)
+GATEWAY_TIMEOUT = httpx.Timeout(connect=10.0, read=270.0, write=30.0, pool=5.0)
 
 # Errors worth retrying (transient network/protocol failures only)
 _RETRYABLE = (

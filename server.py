@@ -316,7 +316,7 @@ _BASH_BLOCKLIST_RE = [re.compile(p, re.IGNORECASE) for p in BASH_BLOCKLIST]
 BASH_TIMEOUT = 30
 KILL_GRACE = 3
 TOOL_TIMEOUT = BASH_TIMEOUT + KILL_GRACE + 5  # outer safety net per tool call
-GATEWAY_TIMEOUT = 180  # per gateway call
+GATEWAY_TIMEOUT = 300  # per gateway call
 WALL_CLOCK_DEFAULT = 900  # total agent wall-clock cap (15 min)
 MAX_STEPS_DEFAULT = 200   # safety fallback — wall_clock is the primary guard
 
