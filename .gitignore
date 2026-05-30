@@ -8,3 +8,4 @@ logs/*.log.*
 logs/
 temp
 temp/
+waibee.db

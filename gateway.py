@@ -1,3 +1,5 @@
+import asyncio
+import random
 import httpx
 import logging
 import logging.handlers
@@ -6,6 +8,17 @@ from config import get_config, get_api_key
 import stats as stats_module
 
 THINKING_BUDGETS = {"low": 1000, "medium": 5000, "high": 10000}
+
+# Split timeouts: connect fast-fail, read generous for LLM streams, write moderate, pool tight
+GATEWAY_TIMEOUT = httpx.Timeout(connect=10.0, read=90.0, write=30.0, pool=5.0)
+
+# Errors worth retrying (transient network/protocol failures only)
+_RETRYABLE = (
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.ConnectError,
+    httpx.RemoteProtocolError,
+)
 
 LOG_PATH = Path(__file__).parent / "logs" / "waibee_mcp.log"
 LOG_PATH.parent.mkdir(exist_ok=True)
@@ -18,6 +31,67 @@ if not logger.handlers:
     )
     handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
     logger.addHandler(handler)
+
+
+async def _post_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    headers: dict,
+    payload: dict,
+    max_retries: int = 2,
+) -> httpx.Response:
+    """
+    POST url with retry on transient errors.
+    - Retries: ConnectTimeout, ReadTimeout, ConnectError, RemoteProtocolError
+    - 4xx → raise immediately, no retry
+    - Backoff: sleep min(2**attempt, 8) + uniform(0, 1) seconds between attempts
+    - Raises final exception after all attempts exhausted
+    """
+    last_exc: Exception | None = None
+
+    for attempt in range(max_retries + 1):  # attempt 0..max_retries inclusive
+        try:
+            resp = await client.post(url, headers=headers, json=payload)
+
+            # 4xx → caller logic error, never retry
+            if 400 <= resp.status_code < 500:
+                logger.error(
+                    f"4xx from gateway attempt={attempt} "
+                    f"status={resp.status_code}: {resp.text}"
+                )
+                resp.raise_for_status()
+
+            return resp
+
+        except _RETRYABLE as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                backoff = min(2**attempt, 8) + random.uniform(0, 1)
+                logger.warning(
+                    f"Retryable error attempt={attempt}/{max_retries} "
+                    f"{type(exc).__name__}: {exc} — retrying in {backoff:.2f}s"
+                )
+                await asyncio.sleep(backoff)
+            else:
+                logger.error(
+                    f"Final attempt={attempt}/{max_retries} failed "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+        except httpx.HTTPStatusError:
+            # Already logged above for 4xx; re-raise without retry
+            raise
+
+        except Exception as exc:
+            # Non-retryable non-HTTP error (e.g. invalid JSON in payload construction)
+            last_exc = exc
+            logger.error(
+                f"Non-retryable error attempt={attempt} "
+                f"{type(exc).__name__}: {exc}"
+            )
+            raise
+
+    raise last_exc
 
 
 async def call(
@@ -59,11 +133,12 @@ async def call(
     logger.info(f"→ {model} | thinking={thinking_effort} | msgs={len(msgs)}")
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
+        async with httpx.AsyncClient(timeout=GATEWAY_TIMEOUT) as client:
+            resp = await _post_with_retry(
+                client,
                 f"{gateway_url}/chat/completions",
-                headers=headers,
-                json=payload,
+                headers,
+                payload,
             )
             logger.info(f"← status={resp.status_code} | model={model}")
 
@@ -139,11 +214,12 @@ async def call_with_tools(
     logger.info(f"→ {model} [tools] | thinking={thinking_effort} | msgs={len(msgs)}")
 
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
+        async with httpx.AsyncClient(timeout=GATEWAY_TIMEOUT) as client:
+            resp = await _post_with_retry(
+                client,
                 f"{gateway_url}/chat/completions",
-                headers=headers,
-                json=payload,
+                headers,
+                payload,
             )
             logger.info(f"← status={resp.status_code} | model={model}")
 

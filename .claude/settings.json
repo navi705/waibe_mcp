@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/vrclu/Documents/NewFilePC/documents/llm_wiki/**)"
+    ]
+  }
+}

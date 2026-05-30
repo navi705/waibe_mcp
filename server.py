@@ -3,14 +3,20 @@ import glob as glob_module
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
+import time
+import uuid
 from datetime import date
 from pathlib import Path
 
 import fastmcp
+from fastmcp import Context
 import logging
 
 from config import get_config, get_api_key, is_enabled, set_flag
+import db as db_module
 import gateway
 import stats as stats_module
 from prompts import build_system_prompt
@@ -18,6 +24,14 @@ from prompts import build_system_prompt
 logger = logging.getLogger("waibee_mcp")
 
 mcp = fastmcp.FastMCP("waibee")
+
+# Background job handles — keeps tasks alive (GC won't collect them)
+_RUNNING_JOBS: dict[str, asyncio.Task] = {}
+
+# Orphan recovery on startup
+_startup_orphans = db_module.recover_orphans(stale_after=240.0)
+if _startup_orphans:
+    logger.warning(f"[startup] orphaned jobs → interrupted: {_startup_orphans}")
 
 
 def _check_enabled():
@@ -41,134 +55,36 @@ def _get_system_prompt(agent: str, system_override: str = None) -> str:
 
 
 @mcp.tool()
-async def waibee_think(
+async def waibee_digest(
+    sources: list[str],
     task: str,
-    complexity: str = "auto",
-    model: str = None,
-    thinking_effort: str = None,
-    agent: str = "default",
-    system_prompt: str = None,
-) -> str:
-    """
-    Send coding task to Waibee gateway model.
-    complexity: simple|medium|complex|auto
-    thinking_effort: low|medium|high (enables extended reasoning)
-    agent: default|reviewer|architect
-    """
-    _check_enabled()
-    resolved = _resolve_model(complexity, model)
-    sys_prompt = _get_system_prompt(agent, system_prompt)
-    messages = [{"role": "user", "content": task}]
-    effort = thinking_effort or get_config().get("default_thinking_effort")
-    return await gateway.call(messages, resolved, sys_prompt, effort)
-
-
-@mcp.tool()
-async def waibee_read(
-    paths: list[str],
-    task: str,
-    raw: bool = False,
     complexity: str = "simple",
     model: str = None,
-    agent: str = "default",
 ) -> str:
     """
-    Read files and process with model. Saves Claude Code input tokens.
-    complexity: simple|medium|complex
-    raw=True: return file content directly without model processing.
-    raw=False: model summarizes/processes files, returns only result.
+    One-shot: read files/run commands → model summarizes → short result.
+    Use to keep large content out of Claude Code context.
+    For multi-step work use waibee_agent instead.
+    sources: list of file paths or "cmd:<powershell command>"
     """
     _check_enabled()
-
-    contents = []
-    for path in paths:
-        p = Path(path)
-        if not p.exists():
-            contents.append(f"[NOT FOUND: {path}]")
-            continue
-        contents.append(f"=== {path} ===\n{p.read_text(encoding='utf-8', errors='replace')}")
-
-    combined = "\n\n".join(contents)
-
-    if raw:
-        return combined
-
+    blobs = []
+    for s in sources:
+        if s.startswith("cmd:"):
+            cmd = s[4:]
+            out = await _run_bash(cmd)
+            blobs.append(f"=== $ {cmd} ===\n{out}")
+        else:
+            p = Path(s)
+            if not p.exists():
+                blobs.append(f"[NOT FOUND: {s}]")
+            else:
+                blobs.append(f"=== {s} ===\n{p.read_text(encoding='utf-8', errors='replace')}")
+    combined = "\n\n".join(blobs)
     resolved = _resolve_model(complexity, model)
-    sys_prompt = _get_system_prompt(agent)
+    sys_prompt = _get_system_prompt("default")
     messages = [{"role": "user", "content": f"{task}\n\n{combined}"}]
     return await gateway.call(messages, resolved, sys_prompt)
-
-
-@mcp.tool()
-async def waibee_run(
-    command: str,
-    task: str,
-    model: str = None,
-) -> str:
-    """
-    Run shell command and analyze output with model.
-    Saves Claude Code input tokens from reading large command output.
-    """
-    _check_enabled()
-
-    result = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
-        capture_output=True, text=True, timeout=60
-    )
-    output = result.stdout
-    if result.stderr:
-        output += f"\nSTDERR:\n{result.stderr}"
-
-    resolved = _resolve_model("simple", model)
-    cfg = get_config()
-    sys_prompt = build_system_prompt(
-        cfg["agents"]["default"], caveman=cfg.get("caveman_ultra", True)
-    )
-    messages = [
-        {
-            "role": "user",
-            "content": (
-                f"{task}\n\nCommand: {command}\n"
-                f"Exit code: {result.returncode}\nOutput:\n{output}"
-            ),
-        }
-    ]
-    return await gateway.call(messages, resolved, sys_prompt)
-
-
-@mcp.tool()
-async def waibee_parallel(
-    subtasks: list[dict],
-    complexity: str = "simple",
-    agent: str = "default",
-) -> str:
-    """
-    Run multiple subtasks in parallel via gateway. Returns combined results.
-    Each subtask is a dict: {"task": str, "complexity"?: str, "model"?: str, "agent"?: str}
-    Top-level complexity/agent are defaults, overridden per subtask.
-    """
-    _check_enabled()
-
-    async def run_one(i: int, item: dict) -> str:
-        task = item["task"]
-        if "paths" in item:
-            contents = []
-            for path in item["paths"]:
-                p = Path(path)
-                if not p.exists():
-                    contents.append(f"[NOT FOUND: {path}]")
-                else:
-                    contents.append(f"=== {path} ===\n{p.read_text(encoding='utf-8', errors='replace')}")
-            if contents:
-                task = task + "\n\n" + "\n\n".join(contents)
-        resolved = _resolve_model(item.get("complexity", complexity), item.get("model"))
-        sys_prompt = _get_system_prompt(item.get("agent", agent))
-        messages = [{"role": "user", "content": task}]
-        result = await gateway.call(messages, resolved, sys_prompt)
-        return f"=== Subtask {i + 1} ===\n{result}"
-
-    results = await asyncio.gather(*[run_one(i, t) for i, t in enumerate(subtasks)])
-    return "\n\n".join(results)
 
 
 AGENT_TOOLS = [
@@ -352,8 +268,7 @@ BASH_BLOCKLIST = [
     r"\bInvoke-Expression\b|\biex\b\s+\$",                                  # Dynamic code execution
 
     # ── Interactive / long-running blockers ───────────────────────────────────
-    r"^\s*python(\d(\.\d+)?)?\s*$",                                         # Bare python → MS Store/REPL
-    r"(?<![\w/\\])python(\d(\.\d+)?)?\s+(-c|-m\s+\w)",                     # python -c / python -m without full path
+    r"(?<![/\\a-zA-Z:])python(\d(\.\d+)?)?\b",                              # any bare python not preceded by path (use py launcher or full path)
     r"^\s*(node|irb|pry|ipython|bash|sh|pwsh|powershell|cmd)\s*$",          # Interactive REPL
     r"\btail\s+-f\b|Get-Content\b.*-Wait\b",                                # Follows file forever
     r"^\s*watch\b",                                                         # Loops forever
@@ -375,6 +290,81 @@ BASH_BLOCKLIST = [
 _BASH_BLOCKLIST_RE = [re.compile(p, re.IGNORECASE) for p in BASH_BLOCKLIST]
 
 
+BASH_TIMEOUT = 30
+KILL_GRACE = 3
+TOOL_TIMEOUT = BASH_TIMEOUT + KILL_GRACE + 5  # outer safety net per tool call
+GATEWAY_TIMEOUT = 180  # per gateway call
+WALL_CLOCK_DEFAULT = 900  # total agent wall-clock cap (15 min)
+MAX_STEPS_DEFAULT = 200   # safety fallback — wall_clock is the primary guard
+
+_STORE_ALIAS_DIR = (os.environ.get("LOCALAPPDATA", "") + r"\Microsoft\WindowsApps").lower()
+
+
+def _windows_kill_tree(pid: int) -> None:
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            capture_output=True, timeout=5,
+        )
+    except Exception:
+        pass
+
+
+def _is_msstore_python_stub(command: str) -> bool:
+    if not re.search(r"(?:^|[\s;&|(])(python|python3)(\.exe)?(?:\s|$)", command, re.IGNORECASE):
+        return False
+    resolved = shutil.which("python") or ""
+    rl = resolved.lower()
+    if _STORE_ALIAS_DIR and rl.startswith(_STORE_ALIAS_DIR):
+        return True
+    try:
+        if resolved and os.path.getsize(resolved) == 0:
+            return True
+    except OSError:
+        pass
+    return False
+
+
+async def _run_bash(command: str, workdir: str = None) -> str:
+    if _is_msstore_python_stub(command):
+        return (
+            "[BLOCKED] 'python' resolves to MS Store app-execution alias — "
+            "spawns unkillable broker process, hangs forever. Use 'py' launcher: "
+            "'py script.py', 'py -m pytest'."
+        )
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "powershell", "-NoProfile", "-NonInteractive", "-Command", command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=workdir,
+        )
+    except Exception as e:
+        return f"[ERROR] failed to start: {e}"
+
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=BASH_TIMEOUT)
+    except asyncio.TimeoutError:
+        if sys.platform == "win32":
+            _windows_kill_tree(proc.pid)
+        else:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=KILL_GRACE)
+        except Exception:
+            pass
+        return f"[TIMEOUT] command exceeded {BASH_TIMEOUT}s — killed. Avoid long-running or interactive commands."
+
+    out = stdout.decode("utf-8", "replace")
+    err = stderr.decode("utf-8", "replace")
+    if err:
+        out += f"\nSTDERR:\n{err}"
+    return out or f"(exit {proc.returncode})"
+
+
 def _check_bash_blocklist(command: str) -> str | None:
     """Return matched pattern string if command is blocked, else None."""
     for pattern, compiled in zip(BASH_BLOCKLIST, _BASH_BLOCKLIST_RE):
@@ -383,10 +373,19 @@ def _check_bash_blocklist(command: str) -> str | None:
     return None
 
 
-def _exec_tool(name: str, args: dict, workdir: str = None, allow_dangerous: bool = False) -> str:
+async def _exec_tool(name: str, args: dict, workdir: str = None, allow_dangerous: bool = False) -> str:
     try:
         if name == "read_file":
-            return Path(args["path"]).read_text(encoding="utf-8", errors="replace")
+            p = Path(args["path"])
+            try:
+                if p.stat().st_size > 10 * 1024 * 1024:
+                    return f"[TOO LARGE] {p.stat().st_size} bytes — use grep_search instead"
+            except OSError:
+                pass
+            return await asyncio.wait_for(
+                asyncio.to_thread(lambda: p.read_text(encoding="utf-8", errors="replace")),
+                timeout=10,
+            )
 
         elif name == "write_file":
             p = Path(args["path"])
@@ -396,9 +395,12 @@ def _exec_tool(name: str, args: dict, workdir: str = None, allow_dangerous: bool
                     p.resolve().relative_to(wd)
                 except ValueError:
                     return f"[DENIED] write_file outside workdir: {p}"
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(args["content"], encoding="utf-8")
-            return f"Written {len(args['content'])} chars to {p}"
+            content = args["content"]
+            await asyncio.wait_for(
+                asyncio.to_thread(lambda: (p.parent.mkdir(parents=True, exist_ok=True), p.write_text(content, encoding="utf-8"))),
+                timeout=10,
+            )
+            return f"Written {len(content)} chars to {p}"
 
         elif name == "bash_run":
             if not allow_dangerous:
@@ -408,40 +410,57 @@ def _exec_tool(name: str, args: dict, workdir: str = None, allow_dangerous: bool
                         f"[BLOCKED] dangerous command: {matched}. "
                         "Use workdir restrictions or request user confirmation."
                     )
-            try:
-                result = subprocess.run(
-                    ["powershell", "-NoProfile", "-NonInteractive", "-Command", args["command"]],
-                    capture_output=True, text=True, timeout=30,
-                    cwd=workdir,
-                )
-                out = result.stdout
-                if result.stderr:
-                    out += f"\nSTDERR:\n{result.stderr}"
-                return out or f"(exit {result.returncode})"
-            except subprocess.TimeoutExpired:
-                return "[TIMEOUT] command exceeded 30s — killed. Avoid long-running or interactive commands."
+            return await _run_bash(args["command"], workdir)
 
         elif name == "glob_search":
             root = args.get("root", workdir or ".")
-            matches = glob_module.glob(args["pattern"], root_dir=root, recursive=True)
-            return "\n".join(matches) if matches else "(no matches)"
+            pattern = args["pattern"]
+            return await asyncio.wait_for(
+                asyncio.to_thread(lambda: "\n".join(glob_module.glob(pattern, root_dir=root, recursive=True)) or "(no matches)"),
+                timeout=15,
+            )
 
         elif name == "grep_search":
             cmd = ["rg", "--line-number", args["pattern"], args["path"]]
             if args.get("file_glob"):
                 cmd += ["--glob", args["file_glob"]]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            return result.stdout or "(no matches)"
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=25)
+                return stdout.decode("utf-8", "replace") or "(no matches)"
+            except asyncio.TimeoutError:
+                if sys.platform == "win32":
+                    _windows_kill_tree(proc.pid)
+                return "[TIMEOUT] grep_search exceeded 25s"
 
         elif name == "list_dir":
-            entries = os.listdir(args["path"])
-            return "\n".join(entries)
+            path = args["path"]
+            return await asyncio.wait_for(
+                asyncio.to_thread(lambda: "\n".join(os.listdir(path))),
+                timeout=10,
+            )
 
         else:
             return f"[UNKNOWN TOOL: {name}]"
 
+    except asyncio.TimeoutError:
+        return f"[TIMEOUT] {name} exceeded time limit"
     except Exception as e:
         return f"[ERROR] {name}: {e}"
+
+
+CHECKPOINT_EVERY = 1  # save checkpoint every step for crash recovery
+
+
+async def _notify(ctx: "Context | None", msg: str) -> None:
+    if ctx is None:
+        return
+    try:
+        await ctx.info(msg)
+    except Exception:
+        pass
 
 
 async def _run_agent_loop(
@@ -449,29 +468,73 @@ async def _run_agent_loop(
     model: str,
     sys_prompt: str,
     thinking_effort: str = None,
-    max_steps: int = 40,
+    max_steps: int = MAX_STEPS_DEFAULT,
     workdir: str = None,
     context: str = None,
     allow_dangerous: bool = False,
+    wall_clock_s: int = WALL_CLOCK_DEFAULT,
+    agent_id: str = None,
+    job_id: str = None,
+    resume_messages: list = None,
+    ctx: "Context | None" = None,
 ) -> str:
-    content = task
-    if context:
-        content = f"Context:\n{context}\n\nTask:\n{task}"
+    if resume_messages:
+        messages = list(resume_messages)
+    else:
+        content = task
+        if context:
+            content = f"Context:\n{context}\n\nTask:\n{task}"
+        messages = [{"role": "user", "content": content}]
 
-    messages = [{"role": "user", "content": content}]
     total_cost = 0.0
     step = 0
+    deadline = time.monotonic() + wall_clock_s
+    aid = agent_id or "agent"
+    _repeat_counts: dict[str, int] = {}  # (tool:args_hash) → count for loop detection
 
+    # Persist initial messages — crash at step 1 still recoverable
+    if job_id:
+        for i, msg in enumerate(messages):
+            await asyncio.to_thread(db_module.append_message, job_id, i, msg)
+
+    resp = None
     while step < max_steps:
+        if time.monotonic() > deadline:
+            logger.warning(f"[{aid}] wall-clock {wall_clock_s}s exceeded at step {step}")
+            if job_id:
+                await asyncio.to_thread(db_module.finish_job, job_id, "timeout")
+            return f"[TIMEOUT] agent wall-clock limit {wall_clock_s}s reached at step {step}.\n\n[steps: {step}, cost: ${total_cost:.6f}]"
+
         step += 1
-        resp = await gateway.call_with_tools(
-            messages=messages,
-            model=model,
-            tools=AGENT_TOOLS,
-            system_prompt=sys_prompt,
-            thinking_effort=thinking_effort,
-        )
+        if job_id:
+            await asyncio.to_thread(db_module.touch_heartbeat, job_id)
+        await _notify(ctx, f"[{aid}] step {step}/{max_steps} — thinking...")
+
+        try:
+            resp = await asyncio.wait_for(
+                gateway.call_with_tools(
+                    messages=messages,
+                    model=model,
+                    tools=AGENT_TOOLS,
+                    system_prompt=sys_prompt,
+                    thinking_effort=thinking_effort,
+                ),
+                timeout=GATEWAY_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"[{aid}] step={step} gateway timeout after {GATEWAY_TIMEOUT}s")
+            if job_id:
+                await asyncio.to_thread(db_module.finish_job, job_id, "timeout", error=f"gateway timeout at step {step}")
+            return f"[TIMEOUT] gateway did not respond within {GATEWAY_TIMEOUT}s at step {step}.\n\n[steps: {step}, cost: ${total_cost:.6f}]"
+        except Exception as e:
+            logger.error(f"[{aid}] step={step} gateway error: {e}")
+            if job_id:
+                await asyncio.to_thread(db_module.finish_job, job_id, "failed", error=str(e))
+            return f"[ERROR] gateway: {e}\n\n[steps: {step}, cost: ${total_cost:.6f}]"
+
         total_cost += resp["cost"]
+        if job_id:
+            await asyncio.to_thread(db_module.update_job_step, job_id, step, resp["cost"])
 
         assistant_msg = {"role": "assistant"}
         if resp["content"]:
@@ -479,11 +542,12 @@ async def _run_agent_loop(
         if resp["tool_calls"]:
             assistant_msg["tool_calls"] = resp["tool_calls"]
         messages.append(assistant_msg)
+        if job_id:
+            await asyncio.to_thread(db_module.append_message, job_id, len(messages) - 1, assistant_msg)
 
         if resp["finish_reason"] != "tool_calls" or not resp["tool_calls"]:
             break
 
-        tool_results = []
         for tc in resp["tool_calls"]:
             fn = tc["function"]
             name = fn["name"]
@@ -492,48 +556,95 @@ async def _run_agent_loop(
             except Exception:
                 args = {}
             args_preview = str(args)[:120]
-            logger.info(f"[agent] step={step} tool={name} args={args_preview}")
-            result = await asyncio.to_thread(_exec_tool, name, args, workdir, allow_dangerous)
+            logger.info(f"[{aid}] step={step} tool={name} args={args_preview}")
+            await _notify(ctx, f"[{aid}] step {step} → {name}({str(args)[:80]})")
+            try:
+                result = await asyncio.wait_for(
+                    _exec_tool(name, args, workdir, allow_dangerous),
+                    timeout=TOOL_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                result = f"[TOOL TIMEOUT] {name} exceeded {TOOL_TIMEOUT}s — skipped"
+                logger.warning(f"[{aid}] step={step} tool={name} outer timeout")
             result_preview = result[:80].replace("\n", "\\n")
-            logger.info(f"[agent] step={step} tool={name} result={result_preview}")
+            logger.info(f"[{aid}] step={step} tool={name} result={result_preview}")
+            await _notify(ctx, f"[{aid}] step {step} ← {name}: {result_preview}")
+            if job_id:
+                await asyncio.to_thread(
+                    db_module.append_trace, job_id, aid, step, name, args_preview, result_preview
+                )
             MAX_TOOL_RESULT = 8000
             if len(result) > MAX_TOOL_RESULT:
                 result = result[:MAX_TOOL_RESULT] + f"\n...[truncated, total {len(result)} chars]"
-            tool_results.append({
-                "role": "tool",
-                "tool_call_id": tc["id"],
-                "content": result,
-            })
+            tool_msg = {"role": "tool", "tool_call_id": tc["id"], "content": result}
+            messages.append(tool_msg)
+            if job_id:
+                await asyncio.to_thread(db_module.append_message, job_id, len(messages) - 1, tool_msg)
 
-        messages.extend(tool_results)
+            # Loop detection: same tool+args repeated 3+ times → warn agent
+            repeat_key = f"{name}:{fn['arguments']}"
+            _repeat_counts[repeat_key] = _repeat_counts.get(repeat_key, 0) + 1
+            if _repeat_counts[repeat_key] == 3:
+                warn = (
+                    f"WARNING: You have called {name}() with the same arguments {_repeat_counts[repeat_key]} times "
+                    f"and keep getting the same result. This approach is not working. "
+                    f"Stop retrying. Try a completely different strategy or explain why the task cannot be completed."
+                )
+                warn_msg = {"role": "user", "content": warn}
+                messages.append(warn_msg)
+                if job_id:
+                    await asyncio.to_thread(db_module.append_message, job_id, len(messages) - 1, warn_msg)
+                logger.warning(f"[{aid}] loop detected: {name} called 3x with same args")
 
-    final = resp.get("content")
+    final = resp.get("content") if resp else None
     if not final:
-        # hit max_steps mid-loop — ask model to summarize what was done
-        logger.warning(f"[agent] max_steps={max_steps} reached, requesting summary")
+        logger.warning(f"[{aid}] max_steps={max_steps} reached, requesting summary")
         messages.append({"role": "user", "content": "You have reached the step limit. Summarize what you have done so far and what remains."})
-        summary_resp = await gateway.call_with_tools(
-            messages=messages, model=model, tools=AGENT_TOOLS,
-            system_prompt=sys_prompt, thinking_effort=thinking_effort,
-        )
-        total_cost += summary_resp["cost"]
-        final = summary_resp.get("content") or "(no response — max steps reached)"
-    logger.info(f"[agent] done steps={step} cost=${total_cost:.6f}")
+        try:
+            summary_resp = await asyncio.wait_for(
+                gateway.call_with_tools(
+                    messages=messages, model=model, tools=AGENT_TOOLS,
+                    system_prompt=sys_prompt, thinking_effort=thinking_effort,
+                ),
+                timeout=GATEWAY_TIMEOUT,
+            )
+            total_cost += summary_resp["cost"]
+            final = summary_resp.get("content") or "(no response — max steps reached)"
+        except Exception as e:
+            final = f"(summary failed: {e})"
+        if job_id:
+            await asyncio.to_thread(db_module.finish_job, job_id, "interrupted", result=final)
+    else:
+        if job_id:
+            await asyncio.to_thread(db_module.finish_job, job_id, "done", result=final)
+
+    logger.info(f"[{aid}] done steps={step} cost=${total_cost:.6f}")
     return f"{final}\n\n[steps: {step}, cost: ${total_cost:.6f}]"
+
+
+async def _supervise(job_id: str, coro) -> None:
+    try:
+        await coro
+    except Exception as e:
+        await asyncio.to_thread(db_module.finish_job, job_id, "failed", error=f"{type(e).__name__}: {e}")
+    finally:
+        _RUNNING_JOBS.pop(job_id, None)
 
 
 @mcp.tool()
 async def waibee_agent(
     task: str,
+    ctx: Context,
     complexity: str = "medium",
     model: str = None,
     thinking_effort: str = None,
     agent: str = "default",
-    max_steps: int = 40,
+    max_steps: int = MAX_STEPS_DEFAULT,
     workdir: str = None,
     context: str = None,
     system_prompt: str = None,
     allow_dangerous: bool = False,
+    wait: bool = True,
 ) -> str:
     """
     Agentic loop: model autonomously reads/writes files and runs commands until task is done.
@@ -541,6 +652,8 @@ async def waibee_agent(
     thinking_effort: low|medium|high (use with complex/opus for hard problems)
     workdir: restrict write_file to this directory
     context: optional chat context to inject
+    wait: True (default) = block until done. False = return job_id immediately, poll with waibee_job_status.
+    After wait=False, call waibee_job_wait(job_id) to block and receive live step notifications.
     allow_dangerous: set True to bypass bash_run blocklist (default False). Blocklist blocks
         destructive commands: git push, rm -rf, Remove-Item -Recurse -Force, format, diskpart,
         DROP TABLE/DATABASE, del /f /s, rd /s /q, shutdown, restart-computer, and any git
@@ -549,15 +662,28 @@ async def waibee_agent(
     _check_enabled()
     resolved = _resolve_model(complexity, model)
     sys_prompt = _get_system_prompt(agent, system_prompt)
-    return await _run_agent_loop(
-        task, resolved, sys_prompt, thinking_effort, max_steps, workdir, context, allow_dangerous
+    job_id = uuid.uuid4().hex[:12]
+    agent_name = agent
+    await asyncio.to_thread(db_module.create_job, job_id, task, resolved, agent_name, workdir)
+
+    coro = _run_agent_loop(
+        task, resolved, sys_prompt, thinking_effort, max_steps, workdir, context,
+        allow_dangerous, agent_id=agent_name, job_id=job_id,
+        ctx=None if not wait else ctx,
     )
+
+    if not wait:
+        task_handle = asyncio.create_task(_supervise(job_id, coro))
+        _RUNNING_JOBS[job_id] = task_handle
+        return json.dumps({"job_id": job_id, "status": "running", "hint": f"waibee_job_status('{job_id}')"})
+
+    return await coro
 
 
 @mcp.tool()
 async def waibee_agents(
     agents: list[dict],
-    max_steps: int = 40,
+    max_steps: int = MAX_STEPS_DEFAULT,
     allow_dangerous: bool = False,
 ) -> str:
     """
@@ -576,6 +702,9 @@ async def waibee_agents(
         retries = item.get("retries", 1)
         item_allow_dangerous = item.get("allow_dangerous", allow_dangerous)
 
+        agent_id = f"a{i+1}:{agent_name}"
+        job_id = uuid.uuid4().hex[:12]
+        await asyncio.to_thread(db_module.create_job, job_id, item["task"], resolved, agent_name, item.get("workdir"))
         last_error = None
         for attempt in range(1, retries + 2):
             try:
@@ -589,6 +718,9 @@ async def waibee_agents(
                         workdir=item.get("workdir"),
                         context=item.get("context"),
                         allow_dangerous=item_allow_dangerous,
+                        wall_clock_s=item.get("wall_clock_s", WALL_CLOCK_DEFAULT),
+                        agent_id=agent_id,
+                        job_id=job_id,
                     ),
                     timeout=timeout,
                 )
@@ -596,10 +728,10 @@ async def waibee_agents(
                 return f"=== Agent {i + 1} [{agent_name}] ({label}){attempt_suffix} ===\n{result}"
             except asyncio.TimeoutError:
                 last_error = f"[TIMEOUT after {timeout}s]"
-                logger.warning(f"[agent {i+1}] attempt {attempt} timeout")
+                logger.warning(f"[{agent_id}] attempt {attempt} timeout")
             except Exception as e:
                 last_error = f"[ERROR] {type(e).__name__}: {e}"
-                logger.warning(f"[agent {i+1}] attempt {attempt} failed: {e}")
+                logger.warning(f"[{agent_id}] attempt {attempt} failed: {e}")
             if attempt <= retries:
                 await asyncio.sleep(2)
 
@@ -607,6 +739,155 @@ async def waibee_agents(
 
     results = await asyncio.gather(*[run_one(i, a) for i, a in enumerate(agents)], return_exceptions=False)
     return "\n\n".join(results)
+
+
+@mcp.tool()
+def waibee_job_status(job_id: str) -> str:
+    """
+    Status + recent trace of a background job.
+    Use to check progress of a job started with wait=False.
+    """
+    j = db_module.get_job(job_id)
+    if not j:
+        return f"[no such job: {job_id}]"
+    trace = db_module.get_trace(job_id, limit=8)
+    trace_lines = [
+        f"  {t['step']}  {t['tool']}({t['args_preview']}) → {t['result_preview']}"
+        for t in trace
+    ]
+    return json.dumps({
+        "job_id": job_id,
+        "status": j["status"],
+        "step": j["last_step"],
+        "cost": round(j["cost"], 6),
+        "error": j["error"],
+        "recent_trace": trace_lines,
+    }, indent=2)
+
+
+@mcp.tool()
+def waibee_job_result(job_id: str) -> str:
+    """Final result of a completed job. Returns result text or error."""
+    j = db_module.get_job(job_id)
+    if not j:
+        return f"[no such job: {job_id}]"
+    if j["status"] == "running":
+        return json.dumps({"status": "running", "step": j["last_step"]})
+    return j["result"] or j["error"] or "(no result)"
+
+
+@mcp.tool()
+def waibee_jobs(status: str = None) -> str:
+    """
+    List recent jobs.
+    status filter: running|done|failed|timeout|interrupted|cancelled
+    No filter: all recent jobs.
+    """
+    jobs = db_module.list_jobs(status=status, limit=20)
+    rows = [{
+        "job_id": j["job_id"],
+        "status": j["status"],
+        "step": j["last_step"],
+        "task": (j["task"] or "")[:80],
+        "cost": round(j["cost"], 6),
+    } for j in jobs]
+    return json.dumps(rows, indent=2)
+
+
+@mcp.tool()
+def waibee_job_cancel(job_id: str) -> str:
+    """Cancel a running background job."""
+    handle = _RUNNING_JOBS.get(job_id)
+    if handle:
+        handle.cancel()
+        _RUNNING_JOBS.pop(job_id, None)
+    db_module.finish_job(job_id, "cancelled")
+    return f"cancelled {job_id}"
+
+
+@mcp.tool()
+async def waibee_resume(job_id: str, extra_steps: int = 40) -> str:
+    """
+    Resume an interrupted job from its last checkpoint.
+    Use after a job shows status=interrupted (hit max_steps or crashed).
+    """
+    _check_enabled()
+    j = db_module.get_job(job_id)
+    if not j:
+        return f"[no such job: {job_id}]"
+    if j["status"] == "running":
+        return f"[job {job_id} is still running — use waibee_job_status to check]"
+
+    prior_messages = db_module.get_resume_messages(job_id, head=2, tail=20)
+    if not prior_messages:
+        return f"[no messages found for {job_id} — cannot resume]"
+
+    primer = (
+        "RESUMING FROM CHECKPOINT. Continue the original task. "
+        "The messages above are your most recent context from before the interruption."
+    )
+    resume_messages = prior_messages + [{"role": "user", "content": primer}]
+
+    resolved = j["model"]
+    sys_prompt = _get_system_prompt(j["agent_name"] or "default")
+    new_job_id = uuid.uuid4().hex[:12]
+    await asyncio.to_thread(
+        db_module.create_job, new_job_id, j["task"], resolved,
+        j["agent_name"] or "default", j["workdir"], parent_id=job_id,
+    )
+
+    return await _run_agent_loop(
+        task=j["task"],
+        model=resolved,
+        sys_prompt=sys_prompt,
+        max_steps=extra_steps,
+        workdir=j["workdir"],
+        agent_id=f"resume:{job_id[:8]}",
+        job_id=new_job_id,
+        resume_messages=resume_messages,
+    )
+
+
+@mcp.tool()
+async def waibee_job_wait(job_id: str, ctx: Context) -> str:
+    """
+    Attach to a background job and receive live step notifications via ctx.info().
+    Returns when job completes. Use after waibee_agent(wait=False).
+    """
+    j = db_module.get_job(job_id)
+    if not j:
+        return f"[no such job: {job_id}]"
+    if j["status"] != "running":
+        return j["result"] or j["error"] or j["status"]
+
+    seen_ids: set[int] = set()
+    # seed with already-seen trace so we don't re-emit past entries
+    for t in db_module.get_trace(job_id, limit=100):
+        seen_ids.add(t["id"])
+
+    last_notify = time.monotonic()
+    while True:
+        await asyncio.sleep(2)
+        j = db_module.get_job(job_id)
+        if not j:
+            return "[job disappeared]"
+
+        # emit new trace entries (get_trace returns newest-first, reverse to emit in order)
+        new_trace = [t for t in db_module.get_trace(job_id, limit=20) if t["id"] not in seen_ids]
+        for t in reversed(new_trace):
+            seen_ids.add(t["id"])
+            await _notify(ctx, f"step {t['step']} -> {t['tool']}({t['args_preview'][:60]}) <- {t['result_preview'][:80]}")
+            last_notify = time.monotonic()
+
+        if j["status"] != "running":
+            result = j["result"] or j["error"] or j["status"]
+            await _notify(ctx, f"[done] {j['status']} - {result[:100]}")
+            return result
+
+        # heartbeat if no new trace for 20s
+        if time.monotonic() - last_notify > 20:
+            await _notify(ctx, f"[waiting] job {job_id} still running... step {j['last_step']}")
+            last_notify = time.monotonic()
 
 
 @mcp.tool()

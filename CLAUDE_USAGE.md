@@ -26,8 +26,7 @@ If you catch yourself about to use Read/Edit/Bash/Write for anything non-trivial
 |----------|------|------|
 | **1st** | `waibee_agent(task)` | ANY task touching files, code, debugging, analysis |
 | **2nd** | `waibee_agents([...])` | 2+ independent tasks — always prefer parallel |
-| **3rd** | `waibee_think(task)` | Pure reasoning with zero file involvement |
-| **4th** | `waibee_read` / `waibee_run` | Only to inject specific context into a follow-up |
+| **3rd** | `waibee_digest(sources, task)` | Summarize large files/output cheaply, keep CC context small |
 
 When in doubt: use `waibee_agent`.
 
@@ -40,11 +39,42 @@ waibee_agent(
     thinking_effort="high",       # low|medium|high — with complex/opus for hard problems
     workdir="C:\\project",        # restrict writes to this dir
     context="...",                # inject relevant chat context when needed
+    wait=True,                    # False = background job, returns job_id immediately
 )
 ```
 
 Agent tools: `read_file`, `write_file`, `bash_run`, `glob_search`, `grep_search`, `list_dir`.
 Agent works autonomously. Claude gets only the final result — no intermediate tokens wasted.
+All jobs tracked in SQLite: status, steps, cost, trace, checkpoints.
+
+### Background jobs (long tasks)
+
+```python
+# Start background job — returns immediately with job_id
+result = waibee_agent(task="refactor entire codebase", complexity="complex", wait=False)
+# → {"job_id": "abc123", "status": "running", "hint": "waibee_job_status('abc123')"}
+
+# Monitor progress
+waibee_job_status("abc123")     # status + last 8 steps trace
+waibee_job_wait("abc123")       # attach and receive live notifications (blocks until done)
+waibee_job_result("abc123")     # final result when done
+waibee_job_cancel("abc123")     # cancel if needed
+
+# List all jobs
+waibee_jobs()                   # all recent
+waibee_jobs("running")          # currently running
+waibee_jobs("interrupted")      # crashed/hit step limit — resumable
+
+# Resume interrupted job (hit step limit or crashed — full message history preserved in DB)
+waibee_resume("abc123")         # continues from last checkpoint
+waibee_resume("abc123", extra_steps=60)
+```
+
+**Live terminal monitor** (separate terminal window — no MCP blocking):
+```bash
+python watch.py              # all active jobs, auto-refresh every second
+python watch.py abc123       # specific job, exits when done
+```
 
 ### waibee_agents — always prefer for multiple tasks
 
@@ -59,6 +89,7 @@ waibee_agents([
 ```
 
 Never run tasks sequentially if they can run in parallel. Use `waibee_agents`.
+Failed agents return `[ERROR]`/`[TIMEOUT]` — others continue unaffected.
 
 ### Complexity selection
 
@@ -81,16 +112,6 @@ Always add `thinking_effort="high"` with `complex` for anything non-trivial.
 | `fullstack` | DB + API + UI features |
 | `sql` | query optimization, indexes |
 | `analyst` | dashboards, statistics, KPIs |
-
-### Single-shot tools (use rarely, only when agent is overkill)
-
-```python
-waibee_think("design a caching strategy", complexity="complex", thinking_effort="high")
-waibee_read(["file.py"], "summarize", complexity="simple")   # raw file summary only
-waibee_run("pytest", "which tests fail")                      # command output analysis
-```
-
-These tools have NO filesystem access — you must find files with Glob/Grep first.
 
 ### Stats / debug
 

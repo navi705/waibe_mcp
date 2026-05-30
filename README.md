@@ -1,4 +1,4 @@
-MCP server for Claude Code. Routes AI inference through Waibee gateway to save tokens.
+MCP server for Claude Code. Routes AI inference through Waibee gateway. Agents autonomously read files, write changes, run commands — Claude Code sees only the final result.
 
 ## How it works
 
@@ -6,36 +6,35 @@ MCP server for Claude Code. Routes AI inference through Waibee gateway to save t
 Claude Code (coordinator — calls waibee tools only)
     ↓ MCP tool call
 waibee_mcp server (Python, runs alongside Claude Code)
-    ↓ POST X-Title: Waibee
-gateway.waibee.com/api/v1
-    ↓
+    ↓ POST to gateway.waibee.com/api/v1
 Model provider (Anthropic, etc.)
 ```
 
-Claude Code delegates all file work, code generation, and analysis to waibee agents. Agents autonomously read files, write changes, run commands, and return only the final result.
-
-## Tools
+## MCP tools
 
 | Tool | What it does |
 |------|-------------|
-| `waibee_agent` | **Primary.** Agentic loop: model reads/writes files and runs commands autonomously |
-| `waibee_agents` | Run multiple independent agentic loops in parallel (with timeout + retry per agent) |
-| `waibee_think` | Single inference call — for pure reasoning with no file work |
-| `waibee_read` | Read files + summarize with model — saves Claude input tokens |
-| `waibee_run` | Run shell command, analyze output with model |
-| `waibee_parallel` | Run multiple single-shot tasks in parallel |
-| `waibee_log` | Show recent log lines in chat — check agent progress |
-| `waibee_models` | List all available models |
+| `waibee_agent` | **Primary.** Agentic loop: agent reads/writes files and runs commands autonomously |
+| `waibee_agents` | Run multiple independent agents in parallel (per-agent timeout + retry) |
+| `waibee_digest` | One-shot: read files/run commands → model summarizes → short result |
+| `waibee_job_status` | Status + recent trace of a background job |
+| `waibee_job_wait` | Attach to background job, receive live step notifications (blocks) |
+| `waibee_job_result` | Final result of a completed job |
+| `waibee_job_cancel` | Cancel a running background job |
+| `waibee_jobs` | List recent jobs, filter by status |
+| `waibee_resume` | Resume an interrupted job from last checkpoint |
+| `waibee_log` | Show recent log lines in chat |
+| `waibee_models` | List available models |
 | `waibee_toggle` | Enable/disable globally, show status |
-| `waibee_stats` | Show token/cost stats by day |
+| `waibee_stats` | Token/cost stats by day |
 
-## Agent tools (available inside waibee_agent loop)
+## Agent tools (inside waibee_agent loop)
 
 | Tool | What it does |
 |------|-------------|
 | `read_file` | Read file contents |
 | `write_file` | Write/overwrite file (sandboxed to workdir if set) |
-| `bash_run` | Run PowerShell command |
+| `bash_run` | Run PowerShell command (blocklisted dangerous commands, 30s timeout) |
 | `glob_search` | Find files by pattern |
 | `grep_search` | Search with ripgrep |
 | `list_dir` | List directory contents |
@@ -48,53 +47,39 @@ Claude Code delegates all file work, code generation, and analysis to waibee age
 
 ## Setup
 
-### 1. Clone
+### 1. Clone and install
 
 ```bash
 git clone <repo-url>
 cd waibee_mcp
-```
-
-### 2. Install dependencies
-
-```bash
 pip install -r requirements.txt
 ```
 
-### 3. Create .env
+### 2. API key
 
 ```bash
 cp .env.example .env
+# edit .env → API_KEY=sk_your_key_here
 ```
 
-Edit `.env` and set your Waibee API key:
-```
-API_KEY=sk_your_key_here
-```
-
-Get the key from Waibee settings in VS Code (Settings → waibeeRouterApiKey).
-
-### 4. Register in Claude Code
+### 3. Register in Claude Code
 
 ```bash
 claude mcp add -s user waibee-mcp python "C:\path\to\waibee_mcp\server.py"
 ```
 
-On Windows with Store Python stub, use the full interpreter path:
+> **Windows MS Store Python:** if `python` resolves to the Store stub, use the full path:
+> ```bash
+> claude mcp add -s user waibee-mcp "C:\Python311\python.exe" "C:\path\to\waibee_mcp\server.py"
+> ```
 
-```bash
-claude mcp add -s user waibee-mcp "C:\Users\<you>\AppData\Local\Microsoft\WindowsApps\python.exe" "C:\path\to\waibee_mcp\server.py"
-```
+Verify: `claude mcp list` → `waibee-mcp Connected`
 
-Verify with `claude mcp list` — `waibee-mcp` should show `Connected`.
+### 4. Add to CLAUDE.md
 
-### 5. Add to global CLAUDE.md
+Copy `CLAUDE_USAGE.md` into `~/.claude/CLAUDE.md`.
 
-Copy `CLAUDE_USAGE.md` content into `~/.claude/CLAUDE.md`.
-
-### 6. Restart Claude Code
-
-### 7. Enable
+### 5. Restart Claude Code and enable
 
 ```
 waibee_toggle(True)
@@ -103,72 +88,101 @@ waibee_toggle(True)
 ## Usage
 
 ```python
-# Check status
-waibee_toggle()
-
-# Agentic — agent reads/writes files autonomously
+# Single agent (blocks until done)
 waibee_agent("fix the bug in src/auth.py", complexity="medium")
 waibee_agent("refactor gateway.py", complexity="complex", thinking_effort="high")
-waibee_agent("add tests for stats.py", workdir="C:\\project")  # write restricted to workdir
+waibee_agent("add tests", workdir="C:\\project")   # write_file restricted to workdir
+
+# Background job — returns job_id immediately
+waibee_agent("refactor entire codebase", complexity="complex", wait=False)
+# → {"job_id": "abc123", "status": "running"}
+
+# Check / wait
+waibee_job_status("abc123")    # status + last 8 trace steps
+waibee_job_wait("abc123")      # block + live notifications per step
+waibee_job_result("abc123")    # final result text
+waibee_jobs("running")         # all running jobs
+waibee_jobs("interrupted")     # crashed or hit step limit — resumable
+waibee_resume("abc123")        # continue from last checkpoint
 
 # Parallel agents
 waibee_agents([
     {"task": "fix api.py", "complexity": "medium", "agent": "backend"},
-    {"task": "optimize query in db.py", "complexity": "complex", "agent": "sql"},
-    # optional per-agent: timeout=300, retries=1
+    {"task": "optimize query", "complexity": "complex", "agent": "sql", "thinking_effort": "high"},
     {"task": "analyze logs", "complexity": "simple", "timeout": 120, "retries": 2},
 ])
 
-## waibee_agents — per-agent options
+# One-shot digest (no agentic loop — just read + summarize)
+waibee_digest(["src/api.py", "cmd:git log --oneline -20"], "summarize recent changes")
 
-Each agent dict supports:
+# Debug
+waibee_log()                      # last 50 log lines
+waibee_log(filter="ERROR")        # only errors
+waibee_stats()                    # today's cost
+```
+
+## Live monitor (separate terminal)
+
+Watch background jobs without blocking Claude Code:
+
+```bash
+python watch.py              # all active jobs, refreshes every second
+python watch.py abc123       # specific job — exits when done
+```
+
+Shows: job status, elapsed time, step count, cost, and last 8 tool calls with args/results.
+
+## waibee_agent parameters
+
+| param | default | description |
+|-------|---------|-------------|
+| `task` | required | Task description |
+| `complexity` | `medium` | `simple`\|`medium`\|`complex` → haiku\|sonnet\|opus |
+| `thinking_effort` | `null` | `low`\|`medium`\|`high` — use with `complex` |
+| `agent` | `default` | `backend`\|`frontend`\|`fullstack`\|`sql`\|`analyst` |
+| `workdir` | `null` | Restrict `write_file` to this directory |
+| `context` | `null` | Extra context to inject into agent prompt |
+| `max_steps` | `100` | Step limit (wall_clock_s is the primary guard) |
+| `wall_clock_s` | `900` | Hard time cap in seconds (15 min) |
+| `wait` | `True` | `False` = return job_id immediately |
+| `allow_dangerous` | `False` | Bypass bash_run blocklist |
+
+## waibee_agents per-agent options
 
 | key | default | description |
 |-----|---------|-------------|
 | `task` | required | Task description |
 | `complexity` | `medium` | simple\|medium\|complex |
 | `thinking_effort` | `null` | low\|medium\|high |
-| `agent` | `default` | backend\|frontend\|fullstack\|sql\|analyst |
-| `workdir` | `null` | Restrict write_file to this directory |
-| `context` | `null` | Extra context to inject |
-| `timeout` | `300` | Seconds before agent is killed |
-| `retries` | `1` | Retry attempts on failure (0 = no retry) |
-| `max_steps` | `20` | Max agentic loop steps |
-
-On failure: result shows `[ERROR]` or `[TIMEOUT]`, other agents continue unaffected.
-Tool results inside agent loop are truncated at 8000 chars to prevent context overflow.
-
-# Single-shot (no file access)
-waibee_think("design a caching strategy", complexity="complex")
-waibee_read(["src/api.py"], "find bugs", complexity="simple")
-waibee_run("pytest", "which tests fail and why")
-
-# Debug
-waibee_log()                    # last 50 log lines
-waibee_log(n=20, filter="agent")  # only agent steps
-waibee_log(filter="ERROR")      # only errors
-
-# Stats
-waibee_stats()                  # today
-waibee_stats("2026-05-27")      # specific day
-waibee_models()                 # list available models
-```
+| `agent` | `default` | Agent persona |
+| `workdir` | `null` | Restrict write_file |
+| `context` | `null` | Extra context |
+| `timeout` | `300` | Seconds before agent killed |
+| `retries` | `1` | Retry attempts on failure |
+| `max_steps` | `100` | Per-agent step limit |
 
 ## Complexity
 
 | complexity | model | when |
 |-----------|-------|------|
-| `simple` | haiku | quick fixes, summaries |
-| `medium` | sonnet | general coding, refactors (default) |
-| `complex` | opus | architecture, hard bugs |
+| `simple` | haiku | summaries, quick fixes, formatting |
+| `medium` | sonnet | coding, refactors, debugging (default) |
+| `complex` | opus | architecture, hard bugs, design decisions |
 
-Always use `complexity` param — never `model="simple"` (causes 400 error).
-
+Always use `complexity` param — never `model="simple"` (causes 400 error).  
 Add `thinking_effort="high"` with `complex` for hard problems.
+
+## Reliability features
+
+- **Hang prevention:** bash_run uses async subprocess + 30s timeout + process tree kill
+- **Loop detection:** agent warned automatically if same tool+args called 3× in a row
+- **Crash recovery:** every message written to SQLite immediately — `waibee_resume` restores full context
+- **Orphan detection:** on startup, stale running jobs (>240s no heartbeat) marked as interrupted
+- **Wall-clock cap:** 900s hard limit per agent regardless of step count
 
 ## Config
 
-Edit `config.json` to change models, agent prompts, caveman mode:
+Edit `config.json`:
 
 ```json
 {
@@ -178,7 +192,7 @@ Edit `config.json` to change models, agent prompts, caveman mode:
     "complex": "anthropic/claude-opus-4-8"
   },
   "agents": {
-    "default": "...",
+    "default": "Senior software engineer...",
     "backend": "...",
     "frontend": "...",
     "fullstack": "...",
@@ -189,42 +203,14 @@ Edit `config.json` to change models, agent prompts, caveman mode:
 }
 ```
 
+Bash safety rules (timeout, error recovery, loop discipline) are injected into every agent prompt automatically — no need to repeat them in custom agent prompts.
+
 ## Logs
 
 Requests and agent steps logged to `logs/waibee_mcp.log` (rotating, 5MB × 3).
 
-Log format:
 ```
 [agent] step=1 tool=read_file args={'path': 'server.py'}
-[agent] step=1 tool=read_file result=import asyncio\nimport...
-[agent] done steps=3 cost=$0.011096
-```
-
-Use `waibee_log()` in Claude Code chat to read logs without leaving the session.
-
-## New machine setup
-
-```bash
-# 1. Clone
-git clone <repo>
-cd waibee_mcp
-
-# 2. Install
-pip install -r requirements.txt
-
-# 3. API key
-cp .env.example .env
-# edit .env → API_KEY=sk_your_key_here
-
-# 4. Register MCP
-claude mcp add -s user waibee-mcp python "C:\path\to\waibee_mcp\server.py"
-# verify: claude mcp list → waibee-mcp Connected
-
-# 5. Add Claude instructions
-# copy CLAUDE_USAGE.md content to ~/.claude/CLAUDE.md
-
-# 6. Restart Claude Code
-
-# 7. Enable
-# waibee_toggle(True)
+[agent] step=1 tool=read_file result=import asyncio...
+[agent] done steps=7 cost=$0.021
 ```
