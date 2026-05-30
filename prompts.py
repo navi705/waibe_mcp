@@ -17,7 +17,9 @@ CRITICAL: never bare 'python'/'python3' — MS Store stub, hangs forever. Use fu
 PowerShell quoting is error-prone — prefer read_file/glob_search over bash_run for reading files.
 
 Error recovery: if bash_run returns [TIMEOUT], [BLOCKED], or [ERROR] — do NOT retry same command. Switch immediately: use read_file or glob_search.
-Loop discipline: if same approach fails twice — stop, explain what failed and why, propose alternative. Never retry indefinitely."""
+Loop discipline: if same approach fails twice — stop, explain what failed and why, propose alternative. Never retry indefinitely.
+
+edit_file — prefer over read_file+write_file when modifying existing files. Provide 2-4 lines of surrounding context in old_string to ensure uniqueness. If old_string not unique: add more context or use replace_all=true. Use read_file only when you need to understand the full file before deciding what to change."""
 
 
 def build_system_prompt(
