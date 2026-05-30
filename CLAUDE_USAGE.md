@@ -96,10 +96,11 @@ waibee_agents([
 ])
 ```
 
-**Write safety:** before launching parallel agents — check file overlap.
-- Read-only tasks: always safe to parallelize
-- Write tasks: each agent must own distinct files. Never give two agents tasks that write the same file.
-- When unsure — run sequentially, not in parallel.
+**Write safety rule:** only ONE agent may write files at a time.
+- Multiple agents reading simultaneously — OK
+- Multiple agents writing simultaneously — FORBIDDEN
+- When task requires writing: launch ONE writing agent, others must be read-only until it finishes
+- Split: first read-only agents in parallel → then one writing agent
 
 ## Complexity
 
