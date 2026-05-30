@@ -9,6 +9,14 @@ CAVEMAN_ULTRA = (
     "Yes: 'Bug in auth middleware. Token expiry check use < not <=. Fix:'"
 )
 
+TASK_RULES = """\
+## Task execution
+
+Complete the task fully — don't gold-plate, but don't leave it half-done.
+Don't add features, refactor, or make improvements beyond what was asked. A bug fix doesn't need surrounding cleanup. Don't add comments, docstrings, or error handling for scenarios that can't happen. Three similar lines is better than a premature abstraction.
+
+If an approach fails, diagnose why before switching tactics — read the error, check your assumptions, try a focused fix. Don't retry the identical action blindly, but don't abandon a viable approach after a single failure either. Escalate only when genuinely stuck after investigation."""
+
 BASH_RULES = """\
 ## Tool rules (apply to every agent)
 
@@ -31,5 +39,6 @@ def build_system_prompt(
     if caveman:
         parts.append(CAVEMAN_ULTRA)
     parts.append(system_override if system_override else agent_prompt)
+    parts.append(TASK_RULES)
     parts.append(BASH_RULES)
     return "\n\n".join(parts)
