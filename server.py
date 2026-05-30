@@ -333,8 +333,10 @@ async def _run_bash(command: str, workdir: str = None) -> str:
             "'py script.py', 'py -m pytest'."
         )
     try:
+        # Prepend UTF-8 output encoding — prevents Cyrillic/Unicode mangling on Russian Windows
+        utf8_prefix = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; $OutputEncoding = [Text.Encoding]::UTF8; "
         proc = await asyncio.create_subprocess_exec(
-            "powershell", "-NoProfile", "-NonInteractive", "-Command", command,
+            "powershell", "-NoProfile", "-NonInteractive", "-Command", utf8_prefix + command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=workdir,
