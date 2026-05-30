@@ -170,6 +170,29 @@ AGENT_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "description": (
+                "Replace exact text in a file (old_string → new_string). "
+                "Faster than read_file + write_file — no need to read the whole file. "
+                "FAILS if old_string not found or appears multiple times. "
+                "Include surrounding lines to make old_string unique. "
+                "Use replace_all=true to replace every occurrence."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "old_string": {"type": "string", "description": "Exact text to find (2-4 lines for uniqueness)"},
+                    "new_string": {"type": "string", "description": "Replacement text"},
+                    "replace_all": {"type": "boolean", "description": "Replace all occurrences (default false)"},
+                },
+                "required": ["path", "old_string", "new_string"],
+            },
+        },
+    },
 ]
 
 # Dangerous command patterns for bash_run blocklist (case-insensitive, matched anywhere in command).
@@ -444,6 +467,37 @@ async def _exec_tool(name: str, args: dict, workdir: str = None, allow_dangerous
                 timeout=10,
             )
 
+        elif name == "edit_file":
+            p = Path(args["path"])
+            if workdir:
+                wd = Path(workdir).resolve()
+                try:
+                    p.resolve().relative_to(wd)
+                except ValueError:
+                    return f"[DENIED] edit_file outside workdir: {p}"
+            old_string = args["old_string"]
+            new_string = args["new_string"]
+            replace_all_flag = args.get("replace_all", False)
+            content = await asyncio.wait_for(
+                asyncio.to_thread(lambda: p.read_text(encoding="utf-8", errors="replace")),
+                timeout=10,
+            )
+            count = content.count(old_string)
+            if count == 0:
+                return f"[ERROR] edit_file: old_string not found in {p}"
+            if count > 1 and not replace_all_flag:
+                return (
+                    f"[ERROR] edit_file: old_string found {count} times in {p}. "
+                    "Add more surrounding context to make it unique, or pass replace_all=true."
+                )
+            new_content = content.replace(old_string, new_string, -1 if replace_all_flag else 1)
+            await asyncio.wait_for(
+                asyncio.to_thread(lambda: p.write_text(new_content, encoding="utf-8")),
+                timeout=10,
+            )
+            replaced = count if replace_all_flag else 1
+            return f"Replaced {replaced} occurrence(s) in {p}"
+
         else:
             return f"[UNKNOWN TOOL: {name}]"
 
@@ -454,6 +508,11 @@ async def _exec_tool(name: str, args: dict, workdir: str = None, allow_dangerous
 
 
 CHECKPOINT_EVERY = 1  # save checkpoint every step for crash recovery
+
+TOOL_RESULTS_DIR = Path(__file__).parent / "tool_results"
+TOOL_RESULTS_DIR.mkdir(exist_ok=True)
+MAX_TOOL_RESULT = 8000
+LARGE_RESULT_PREVIEW = 2048
 
 
 async def _notify(ctx: "Context | None", msg: str) -> None:
@@ -557,7 +616,7 @@ async def _run_agent_loop(
                 args = json.loads(fn["arguments"])
             except Exception:
                 args = {}
-            args_preview = str(args)[:120]
+            args_preview = str(args)[:500]
             logger.info(f"[{aid}] step={step} tool={name} args={args_preview}")
             await _notify(ctx, f"[{aid}] step {step} → {name}({str(args)[:80]})")
             try:
@@ -568,16 +627,26 @@ async def _run_agent_loop(
             except asyncio.TimeoutError:
                 result = f"[TOOL TIMEOUT] {name} exceeded {TOOL_TIMEOUT}s — skipped"
                 logger.warning(f"[{aid}] step={step} tool={name} outer timeout")
-            result_preview = result[:80].replace("\n", "\\n")
+            result_preview = result[:1000]
             logger.info(f"[{aid}] step={step} tool={name} result={result_preview}")
             await _notify(ctx, f"[{aid}] step {step} ← {name}: {result_preview}")
             if job_id:
                 await asyncio.to_thread(
                     db_module.append_trace, job_id, aid, step, name, args_preview, result_preview
                 )
-            MAX_TOOL_RESULT = 8000
             if len(result) > MAX_TOOL_RESULT:
-                result = result[:MAX_TOOL_RESULT] + f"\n...[truncated, total {len(result)} chars]"
+                fname = f"{job_id or uuid.uuid4().hex[:8]}-s{step}-{name}-{tc['id'][:8]}.txt"
+                result_file = TOOL_RESULTS_DIR / fname
+                try:
+                    result_file.write_text(result, encoding="utf-8")
+                    preview = result[:LARGE_RESULT_PREVIEW]
+                    result = (
+                        f"[Result too large ({len(result)} chars). "
+                        f"Full output saved to: {result_file}\n"
+                        f"Preview (first {LARGE_RESULT_PREVIEW} chars):\n{preview}"
+                    )
+                except Exception:
+                    result = result[:MAX_TOOL_RESULT] + f"\n...[truncated, total {len(result)} chars]"
             tool_msg = {"role": "tool", "tool_call_id": tc["id"], "content": result}
             messages.append(tool_msg)
             if job_id:
@@ -624,9 +693,49 @@ async def _run_agent_loop(
     return f"{final}\n\n[steps: {step}, cost: ${total_cost:.6f}]"
 
 
+def _filter_resume_messages(messages: list) -> list:
+    """Strip orphaned tool_calls (no matching tool result) and whitespace-only assistant messages."""
+    result_ids = {msg.get("tool_call_id") for msg in messages if msg.get("role") == "tool"}
+    filtered = []
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            content = (msg.get("content") or "").strip()
+            tool_calls = msg.get("tool_calls") or []
+            if not content and not tool_calls:
+                continue
+            if tool_calls:
+                resolved = [tc for tc in tool_calls if tc.get("id") in result_ids]
+                if not resolved:
+                    if not content:
+                        continue
+                    msg = {k: v for k, v in msg.items() if k != "tool_calls"}
+                elif len(resolved) != len(tool_calls):
+                    msg = {**msg, "tool_calls": resolved}
+        filtered.append(msg)
+    return filtered
+
+
+async def _run_agent_loop_guarded(*args, **kwargs) -> str:
+    job_id = kwargs.get("job_id")
+    aid = kwargs.get("agent_id") or "agent"
+    try:
+        return await _run_agent_loop(*args, **kwargs)
+    except asyncio.CancelledError:
+        logger.warning(f"[{aid}] CancelledError — marking interrupted")
+        if job_id:
+            try:
+                await asyncio.to_thread(db_module.finish_job, job_id, "interrupted", error="cancelled by client")
+            except Exception:
+                pass
+        raise
+
+
 async def _supervise(job_id: str, coro) -> None:
     try:
         await coro
+    except asyncio.CancelledError:
+        await asyncio.to_thread(db_module.finish_job, job_id, "interrupted", error="cancelled")
+        raise
     except Exception as e:
         await asyncio.to_thread(db_module.finish_job, job_id, "failed", error=f"{type(e).__name__}: {e}")
     finally:
@@ -668,7 +777,7 @@ async def waibee_agent(
     agent_name = agent
     await asyncio.to_thread(db_module.create_job, job_id, task, resolved, agent_name, workdir)
 
-    coro = _run_agent_loop(
+    coro = _run_agent_loop_guarded(
         task, resolved, sys_prompt, thinking_effort, max_steps, workdir, context,
         allow_dangerous, agent_id=agent_name, job_id=job_id,
         ctx=None if not wait else ctx,
@@ -711,7 +820,7 @@ async def waibee_agents(
         for attempt in range(1, retries + 2):
             try:
                 result = await asyncio.wait_for(
-                    _run_agent_loop(
+                    _run_agent_loop_guarded(
                         task=item["task"],
                         model=resolved,
                         sys_prompt=sys_prompt,
@@ -824,6 +933,8 @@ async def waibee_resume(job_id: str, extra_steps: int = 40) -> str:
     if not prior_messages:
         return f"[no messages found for {job_id} — cannot resume]"
 
+    prior_messages = _filter_resume_messages(prior_messages)
+
     primer = (
         "RESUMING FROM CHECKPOINT. Continue the original task. "
         "The messages above are your most recent context from before the interruption."
@@ -838,7 +949,7 @@ async def waibee_resume(job_id: str, extra_steps: int = 40) -> str:
         j["agent_name"] or "default", j["workdir"], parent_id=job_id,
     )
 
-    return await _run_agent_loop(
+    return await _run_agent_loop_guarded(
         task=j["task"],
         model=resolved,
         sys_prompt=sys_prompt,
