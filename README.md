@@ -44,6 +44,11 @@ Model provider (Anthropic, etc.)
 - Python 3.11+
 - Claude Code (desktop or VS Code extension)
 - Waibee API key (`sk_...` from Waibee VS Code settings → waibeeRouterApiKey)
+- [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`) — required for `grep_search`
+
+  ```powershell
+  winget install BurntSushi.ripgrep.MSVC
+  ```
 
 ## Setup
 
