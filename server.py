@@ -482,7 +482,12 @@ async def _exec_tool(name: str, args: dict, workdir: str = None, allow_dangerous
                 asyncio.to_thread(lambda: p.read_text(encoding="utf-8", errors="replace")),
                 timeout=10,
             )
-            count = content.count(old_string)
+            # Normalize CRLF → LF for matching (Windows files often have \r\n)
+            has_crlf = "\r\n" in content
+            content_norm = content.replace("\r\n", "\n")
+            old_norm = old_string.replace("\r\n", "\n")
+            new_norm = new_string.replace("\r\n", "\n")
+            count = content_norm.count(old_norm)
             if count == 0:
                 return f"[ERROR] edit_file: old_string not found in {p}"
             if count > 1 and not replace_all_flag:
@@ -490,7 +495,10 @@ async def _exec_tool(name: str, args: dict, workdir: str = None, allow_dangerous
                     f"[ERROR] edit_file: old_string found {count} times in {p}. "
                     "Add more surrounding context to make it unique, or pass replace_all=true."
                 )
-            new_content = content.replace(old_string, new_string, -1 if replace_all_flag else 1)
+            new_content = content_norm.replace(old_norm, new_norm, -1 if replace_all_flag else 1)
+            # Restore original line endings
+            if has_crlf:
+                new_content = new_content.replace("\n", "\r\n")
             await asyncio.wait_for(
                 asyncio.to_thread(lambda: p.write_text(new_content, encoding="utf-8")),
                 timeout=10,
