@@ -358,8 +358,10 @@ async def _run_bash(command: str, workdir: str = None) -> str:
     try:
         # Prepend UTF-8 output encoding — prevents Cyrillic/Unicode mangling on Russian Windows
         utf8_prefix = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; $OutputEncoding = [Text.Encoding]::UTF8; "
+        # Pin working directory so agent can't accidentally operate outside workdir
+        wd_prefix = f'Set-Location -LiteralPath "{workdir}"; ' if workdir else ""
         proc = await asyncio.create_subprocess_exec(
-            "powershell", "-NoProfile", "-NonInteractive", "-Command", utf8_prefix + command,
+            "powershell", "-NoProfile", "-NonInteractive", "-Command", utf8_prefix + wd_prefix + command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=workdir,
@@ -576,6 +578,10 @@ async def _run_agent_loop(
 
         step += 1
         if job_id:
+            current = await asyncio.to_thread(db_module.get_job, job_id)
+            if current and current["status"] == "cancelled":
+                logger.info(f"[{aid}] cancelled via DB at step {step}")
+                return f"[CANCELLED] job cancelled at step {step}.\n\n[steps: {step}, cost: ${total_cost:.6f}]"
             await asyncio.to_thread(db_module.touch_heartbeat, job_id)
         await _notify(ctx, f"[{aid}] step {step}/{max_steps} — thinking...")
 

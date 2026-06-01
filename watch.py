@@ -34,6 +34,8 @@ try:
                 elif ch2 == b"Q": keys.append("pgdn")
             elif ch in (b"q", b"Q"):
                 keys.append("quit")
+            elif ch in (b"c", b"C"):
+                keys.append("cancel")
         return keys
 except ImportError:
     def _read_keys(): return []
@@ -129,7 +131,7 @@ def tool_style(tool, result):
     }.get(tool, "dim")
 
 
-def render_job(j) -> Panel:
+def render_job(j, selected: bool = False) -> Panel:
     status = j["status"]
     sc = {"running": "cyan", "done": "green", "failed": "red",
           "timeout": "red", "cancelled": "red", "interrupted": "yellow"}.get(status, "dim")
@@ -190,32 +192,36 @@ def render_job(j) -> Panel:
     else:
         footer = Text(status, style="dim")
 
+    border = box.HEAVY if selected else box.SIMPLE
     return Panel(Group(task_line, tbl, footer), title=title, title_align="left",
-                 border_style=sc, box=box.SIMPLE)
+                 border_style=sc, box=border)
 
 
-def build_display(filter_id, scroll_offset=0):
+def build_display(filter_id, scroll_offset=0, cursor=0):
     now = datetime.now().strftime("%H:%M:%S")
     header = Text()
     header.append("waibee watch", style="bold")
     header.append(f"  {now}", style="dim")
     if filter_id:
         header.append(f"  {filter_id}", style="dim")
-    header.append("  ↑↓ scroll  q quit", style="dim")
+    header.append("  ↑↓ select  c cancel  q quit", style="dim")
 
     jobs = get_jobs(filter_id)
     if not jobs:
-        return Group(header, Text(""), Text("waiting for jobs...", style="dim")), jobs, 0
+        return Group(header, Text(""), Text("waiting for jobs...", style="dim")), jobs, 0, 0
 
     total = len(jobs)
-    scroll_offset = max(0, min(scroll_offset, total - 1))
+    cursor = max(0, min(cursor, total - 1))
+    scroll_offset = cursor
+
     visible = jobs[scroll_offset:]
 
     parts = [header, Text("")]
     if scroll_offset > 0:
         parts.append(Text(f"  ↑ {scroll_offset} more above", style="dim"))
-    parts.extend(render_job(j) for j in visible)
-    return Group(*parts), jobs, scroll_offset
+    for i, j in enumerate(visible):
+        parts.append(render_job(j, selected=(scroll_offset + i == cursor)))
+    return Group(*parts), jobs, scroll_offset, cursor
 
 
 def main():
@@ -226,6 +232,7 @@ def main():
         sys.exit(1)
 
     scroll_offset = 0
+    cursor = 0
     last_db_refresh = 0.0
     jobs: list = []
 
@@ -238,10 +245,32 @@ def main():
                 for key in _read_keys():
                     if key == "quit":
                         return
-                    elif key == "up":   scroll_offset = max(0, scroll_offset - 1); dirty = True
-                    elif key == "down": scroll_offset += 1; dirty = True
-                    elif key == "pgup": scroll_offset = max(0, scroll_offset - 3); dirty = True
-                    elif key == "pgdn": scroll_offset += 3; dirty = True
+                    elif key == "up":
+                        cursor = max(0, cursor - 1)
+                        scroll_offset = cursor
+                        dirty = True
+                    elif key == "down":
+                        cursor += 1
+                        scroll_offset = cursor
+                        dirty = True
+                    elif key == "pgup":
+                        cursor = max(0, cursor - 3)
+                        scroll_offset = cursor
+                        dirty = True
+                    elif key == "pgdn":
+                        cursor += 3
+                        scroll_offset = cursor
+                        dirty = True
+                    elif key == "cancel":
+                        if jobs and cursor < len(jobs):
+                            target = jobs[cursor]
+                            if target["status"] == "running":
+                                with _con() as con:
+                                    con.execute(
+                                        "UPDATE jobs SET status='cancelled', updated_at=? WHERE job_id=?",
+                                        (time.time(), target["job_id"]),
+                                    )
+                                dirty = True
 
                 # DB — every 1s
                 now = time.monotonic()
@@ -250,7 +279,7 @@ def main():
                     dirty = True
 
                 if dirty:
-                    display, jobs, scroll_offset = build_display(filter_id, scroll_offset)
+                    display, jobs, scroll_offset, cursor = build_display(filter_id, scroll_offset, cursor)
                     live.update(display)
 
                 if filter_id and jobs and all(j["status"] != "running" for j in jobs):
