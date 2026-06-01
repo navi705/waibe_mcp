@@ -50,19 +50,23 @@ def _con():
     return con
 
 
-DONE_TTL = 120  # seconds before completed jobs disappear
+DONE_TTL = 120        # seconds before done/failed jobs disappear
+INTERRUPTED_TTL = 600 # seconds before interrupted jobs disappear (10 min)
 
 def get_jobs(job_id=None):
     with _con() as con:
         if job_id:
             rows = con.execute("SELECT * FROM jobs WHERE job_id=?", (job_id,)).fetchall()
         else:
-            cutoff = time.time() - DONE_TTL
+            done_cutoff = time.time() - DONE_TTL
+            interrupted_cutoff = time.time() - INTERRUPTED_TTL
             rows = con.execute(
                 "SELECT * FROM jobs "
-                "WHERE status IN ('running', 'interrupted') OR updated_at > ? "
+                "WHERE status = 'running' "
+                "   OR (status = 'interrupted' AND updated_at > ?) "
+                "   OR (status NOT IN ('running', 'interrupted') AND updated_at > ?) "
                 "ORDER BY created_at DESC LIMIT 20",
-                (cutoff,),
+                (interrupted_cutoff, done_cutoff),
             ).fetchall()
     return [dict(r) for r in rows]
 
@@ -131,9 +135,17 @@ def render_job(j) -> Panel:
           "timeout": "red", "cancelled": "red", "interrupted": "yellow"}.get(status, "dim")
     bullet = "●" if status == "running" else "○"
 
+    model_raw = j.get("model") or ""
+    if "opus" in model_raw:     model_label = "opus"
+    elif "sonnet" in model_raw: model_label = "sonnet"
+    elif "haiku" in model_raw:  model_label = "haiku"
+    else:                       model_label = model_raw.split("/")[-1][:10] if model_raw else ""
+
     title = Text()
     title.append(f"{bullet} {j['job_id']}  ", style=f"bold {sc}")
     title.append(status, style=sc)
+    if model_label:
+        title.append(f"  {model_label}", style="bold dim")
     title.append(f"  {elapsed(j['created_at'])}  step {j['last_step']}  ${j['cost']:.4f}", style="dim")
 
     task_line = Text((j["task"] or "")[:80], style="dim")
