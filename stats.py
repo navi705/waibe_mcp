@@ -65,22 +65,26 @@ def format_stats(data: dict, label: str) -> str:
     if not data:
         return f"No data for {label}"
 
+    in_tok = data.get('input_tokens', 0)
+    out_tok = data.get('output_tokens', 0)
+    total_tok = in_tok + out_tok
     lines = [
         f"Stats [{label}]",
         f"  requests : {data.get('requests', 0)}",
-        f"  input    : {data.get('input_tokens', 0):,} tokens",
-        f"  output   : {data.get('output_tokens', 0):,} tokens",
-        f"  cost     : ${data.get('cost_usd', 0):.6f}",
+        f"  input    : {in_tok:,} tok",
+        f"  output   : {out_tok:,} tok",
+        f"  total    : {total_tok:,} tok",
     ]
 
     by_model = data.get("by_model", {})
     if by_model:
         lines.append("\n  by model:")
         for model, m in by_model.items():
+            mi = m['input_tokens']
+            mo = m['output_tokens']
             lines.append(
                 f"    {model}: req={m['requests']} "
-                f"in={m['input_tokens']:,} out={m['output_tokens']:,} "
-                f"${m['cost_usd']:.6f}"
+                f"in={mi:,} out={mo:,} total={mi+mo:,}tok"
             )
 
     return "\n".join(lines)

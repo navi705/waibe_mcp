@@ -2,7 +2,7 @@
   "models": {
     "simple": "anthropic/claude-sonnet-4-6",
     "complex": "anthropic/claude-opus-4-8",
-    "critical": "claude-fable-5"
+    "critical": "anthropic/claude-fable-5"
   },
   "agents": {
     "default": "Senior software engineer. Write clean, correct, production-ready code. Be concise.\n\nFile inspection: prefer glob_search + read_file over bash_run for listing/reading files.",

@@ -139,8 +139,8 @@ def render_job(j, selected: bool = False) -> Panel:
 
     model_raw = j.get("model") or ""
     if "opus" in model_raw:     model_label = "opus"
+    elif "fable" in model_raw:  model_label = "fable-5"
     elif "sonnet" in model_raw: model_label = "sonnet"
-    elif "haiku" in model_raw:  model_label = "haiku"
     else:                       model_label = model_raw.split("/")[-1][:10] if model_raw else ""
 
     title = Text()

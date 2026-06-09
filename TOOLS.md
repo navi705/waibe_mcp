@@ -27,10 +27,10 @@ waibee_think(
 **complexity** — selects the model:
 | Value | Model | Use when |
 |-------|-------|----------|
-| `simple` | claude-haiku-4-5 | Quick fixes, short snippets, formatting |
-| `medium` | claude-sonnet-4-6 | General coding, refactors, debugging |
-| `complex` | claude-opus-4-8 | Architecture, hard bugs, stuck situations |
-| `auto` | sonnet (default) | Let it default to medium |
+| `simple` | claude-sonnet-4-6 | Default — all coding, refactors, debugging, summaries |
+| `complex` | claude-opus-4-8 | Architecture, hard bugs, multi-file design decisions |
+| `critical` | fable-5 | Last resort — only after 3+ failed opus attempts |
+| `auto`/`medium` | sonnet (alias) | Same as simple |
 
 **model** — explicit model override, bypasses complexity. Use for experiments.
 Example: `model="anthropic/claude-opus-4-8"` or any model from `waibee_models()`.
@@ -80,7 +80,7 @@ waibee_think("we need to migrate from monolith to microservices, suggest approac
              complexity="complex", thinking_effort="high", agent="fullstack")
 
 # try specific model
-waibee_think("explain this regex: ...", model="anthropic/claude-haiku-4-5")
+waibee_think("explain this regex: ...", complexity="simple")
 ```
 
 ---
@@ -151,7 +151,7 @@ waibee_run(
 
 ### Nuances
 
-- Always uses `simple` (haiku) by default — output analysis is usually straightforward
+- Always uses `simple` (sonnet) by default — output analysis is usually straightforward
 - If command fails (non-zero exit code), stderr is included automatically
 - Override with `model=` for complex analysis
 
@@ -255,9 +255,9 @@ Returns a newline-separated list of model IDs. Use to discover available models 
 
 ```python
 waibee_models()
-# → anthropic/claude-haiku-4-5
-#   anthropic/claude-sonnet-4-6
+# → anthropic/claude-sonnet-4-6
 #   anthropic/claude-opus-4-8
+#   anthropic/claude-fable-5
 #   openai/gpt-4o
 #   google/gemini-2.0-flash
 #   ... etc
@@ -304,7 +304,7 @@ waibee_stats(date_str: str = None)
 
 ### Output includes
 
-- Total requests, input tokens, output tokens, cost in USD
+- Total requests, input tokens, output tokens, total tokens
 - Breakdown by model
 
 ### Examples
@@ -321,11 +321,11 @@ Stats [2026-05-27]
   requests : 12
   input    : 18,432 tokens
   output   : 4,201 tokens
-  cost     : $0.003847
+  total    : 22,633 tok
 
   by model:
-    anthropic/claude-haiku-4-5: req=8 in=10,000 out=2,500 $0.000620
-    anthropic/claude-sonnet-4-6: req=4 in=8,432 out=1,701 $0.003227
+    anthropic/claude-sonnet-4-6: req=8 in=10,000 out=2,500 8500tok
+    anthropic/claude-opus-4-8: req=4 in=8,432 out=1,701 3200tok
 ```
 
 ---
@@ -339,8 +339,8 @@ ValueError: waibee_mcp disabled. Call waibee_toggle(True) to enable.
 
 **Caveman ultra** — all model responses are prefixed with a terse caveman-style instruction (config: `caveman_ultra: true`). Responses are compressed, fragment-style. Disable in `config.json` if you need verbose output.
 
-**Cost tracking** — cost is taken from `upstream_inference_cost` in the gateway response. This is the actual provider cost. Waibee adds no markup (BYOK).
+**Token tracking** — `waibee_stats` shows total tokens per model. Cost field always 0 (gateway no longer returns cost_details).
 
-**Timeouts** — gateway calls timeout at 120s. Shell commands in `waibee_run` timeout at 60s.
+**Timeouts** — gateway read timeout 270s, server hard cap 300s. Shell commands in `waibee_run` timeout at 60s.
 
 **Token efficiency priority** — use `waibee_read` and `waibee_run` aggressively. Every file you read directly in Claude Code costs input tokens that accumulate across the session. Routing through waibee tools keeps Claude Code context lean.

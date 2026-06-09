@@ -142,7 +142,7 @@ Shows: job status, elapsed time, step count, cost, and last 8 tool calls with ar
 | param | default | description |
 |-------|---------|-------------|
 | `task` | required | Task description |
-| `complexity` | `medium` | `simple`\|`medium`\|`complex` → haiku\|sonnet\|opus |
+| `complexity` | `simple` | `simple`\|`complex`\|`critical` → sonnet\|opus\|fable-5 |
 | `thinking_effort` | `null` | `low`\|`medium`\|`high` — use with `complex` |
 | `agent` | `default` | `backend`\|`frontend`\|`fullstack`\|`sql`\|`analyst` |
 | `workdir` | `null` | Restrict `write_file` to this directory |
@@ -157,7 +157,7 @@ Shows: job status, elapsed time, step count, cost, and last 8 tool calls with ar
 | key | default | description |
 |-----|---------|-------------|
 | `task` | required | Task description |
-| `complexity` | `medium` | simple\|medium\|complex |
+| `complexity` | `simple` | simple\|complex\|critical |
 | `thinking_effort` | `null` | low\|medium\|high |
 | `agent` | `default` | Agent persona |
 | `workdir` | `null` | Restrict write_file |
@@ -170,11 +170,12 @@ Shows: job status, elapsed time, step count, cost, and last 8 tool calls with ar
 
 | complexity | model | when |
 |-----------|-------|------|
-| `simple` | haiku | summaries, quick fixes, formatting |
-| `medium` | sonnet | coding, refactors, debugging (default) |
-| `complex` | opus | architecture, hard bugs, design decisions |
+| `simple` | sonnet | default — all coding, refactors, debugging, summaries |
+| `complex` | opus | architecture, hard bugs, multi-file design decisions |
+| `critical` | fable-5 | **last resort** — only after 3+ failed opus attempts |
 
-Always use `complexity` param — never `model="simple"` (causes 400 error).  
+`medium` accepted as alias for `simple`.  
+Always use `complexity` param — never `model="..."` (causes 400 error).  
 Add `thinking_effort="high"` with `complex` for hard problems.
 
 ## Reliability features
@@ -192,9 +193,9 @@ Edit `config.json`:
 ```json
 {
   "models": {
-    "simple": "anthropic/claude-haiku-4-5",
-    "medium": "anthropic/claude-sonnet-4-6",
-    "complex": "anthropic/claude-opus-4-8"
+    "simple": "anthropic/claude-sonnet-4-6",
+    "complex": "anthropic/claude-opus-4-8",
+    "critical": "anthropic/claude-fable-5"
   },
   "agents": {
     "default": "Senior software engineer...",
