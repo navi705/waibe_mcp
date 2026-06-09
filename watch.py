@@ -148,7 +148,9 @@ def render_job(j, selected: bool = False) -> Panel:
     title.append(status, style=sc)
     if model_label:
         title.append(f"  {model_label}", style="bold dim")
-    title.append(f"  {elapsed(j['created_at'])}  step {j['last_step']}  ${j['cost']:.4f}", style="dim")
+    tok = int(j['cost'])
+    tok_label = f"{tok//1000}K" if tok >= 1000 else str(tok)
+    title.append(f"  {elapsed(j['created_at'])}  step {j['last_step']}  {tok_label}tok", style="dim")
 
     task_line = Text((j["task"] or "")[:80], style="dim")
 

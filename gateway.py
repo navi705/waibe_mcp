@@ -156,18 +156,12 @@ async def call(
         raise
 
     usage = data.get("usage", {})
-    cost = (usage.get("cost_details") or {}).get("upstream_inference_cost", 0) or 0
-    logger.info(
-        f"✓ in={usage.get('prompt_tokens', 0)} out={usage.get('completion_tokens', 0)} "
-        f"cost=${cost:.6f}"
-    )
+    cost = usage.get("total_tokens", 0)
+    in_tok = usage.get("prompt_tokens", 0)
+    out_tok = usage.get("completion_tokens", 0)
+    logger.info(f"✓ in={in_tok} out={out_tok} total={cost}tok")
 
-    stats_module.record(
-        model=model,
-        input_tokens=usage.get("prompt_tokens", 0),
-        output_tokens=usage.get("completion_tokens", 0),
-        cost=cost,
-    )
+    stats_module.record(model=model, input_tokens=in_tok, output_tokens=out_tok, cost=0)
 
     return data["choices"][0]["message"]["content"]
 
@@ -237,18 +231,12 @@ async def call_with_tools(
         raise
 
     usage = data.get("usage", {})
-    cost = (usage.get("cost_details") or {}).get("upstream_inference_cost", 0) or 0
-    logger.info(
-        f"✓ in={usage.get('prompt_tokens', 0)} out={usage.get('completion_tokens', 0)} "
-        f"cost=${cost:.6f}"
-    )
+    cost = usage.get("total_tokens", 0)
+    in_tok = usage.get("prompt_tokens", 0)
+    out_tok = usage.get("completion_tokens", 0)
+    logger.info(f"✓ in={in_tok} out={out_tok} total={cost}tok")
 
-    stats_module.record(
-        model=model,
-        input_tokens=usage.get("prompt_tokens", 0),
-        output_tokens=usage.get("completion_tokens", 0),
-        cost=cost,
-    )
+    stats_module.record(model=model, input_tokens=in_tok, output_tokens=out_tok, cost=0)
 
     choice = data["choices"][0]
     message = choice["message"]

@@ -106,12 +106,23 @@ waibee_agents([
 
 | complexity | model | when |
 |-----------|-------|------|
-| `simple` | haiku | summaries, quick fixes, formatting |
-| `medium` | sonnet | coding, refactors, debugging (default) |
-| `complex` | opus | architecture, hard bugs, design decisions |
+| `simple` | sonnet | default — all coding, refactors, debugging, summaries |
+| `complex` | opus | architecture, hard bugs, multi-file design decisions |
+| `critical` | fable-5 | **LAST RESORT ONLY** — see rules below |
 
-**NEVER** `model="simple/medium/complex"` — use `complexity=` only. Wrong param → 400 error.
+`medium` still accepted as alias for `simple`.
+
+**NEVER** `model="..."` — use `complexity=` only. Wrong param → 400 error.
 Always `thinking_effort="high"` with `complex`.
+
+### When to use `critical` (fable-5)
+
+fable-5 is extremely expensive. Use ONLY when:
+- Same problem attempted 3+ times with `complex` and all failed
+- Infinite loop agent can't break out of after multiple attempts
+- Bug is truly non-obvious and opus exhausted all approaches
+
+**NEVER** use `critical` for: first attempt, routine tasks, anything solvable by sonnet/opus.
 
 ## Agent personas
 

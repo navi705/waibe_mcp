@@ -47,8 +47,10 @@ def init_db() -> None:
     """Create tables + enable WAL. Safe to call multiple times (IF NOT EXISTS)."""
     with _write_lock, _conn() as con:
         con.execute("PRAGMA journal_mode=WAL")
-        con.execute("PRAGMA synchronous=NORMAL")   # safe with WAL, faster
+        con.execute("PRAGMA synchronous=FULL")       # crash-safe: flush before commit
+        con.execute("PRAGMA wal_autocheckpoint=50")  # checkpoint every 50 pages (default 1000)
         con.execute("PRAGMA foreign_keys=ON")
+        con.execute("PRAGMA wal_checkpoint(PASSIVE)")  # merge any leftover WAL on startup
 
         con.executescript("""
             CREATE TABLE IF NOT EXISTS jobs (

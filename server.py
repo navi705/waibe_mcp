@@ -5,7 +5,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import time
 import uuid
 from datetime import date
@@ -43,8 +42,9 @@ def _resolve_model(complexity: str, model_override: str = None) -> str:
     if model_override:
         return model_override
     cfg = get_config()
-    c = complexity if complexity != "auto" else "medium"
-    return cfg["models"].get(c, cfg["models"]["medium"])
+    # medium is alias for simple (same model, no duplication)
+    c = "simple" if complexity in ("medium", "auto") else complexity
+    return cfg["models"].get(c, cfg["models"]["simple"])
 
 
 def _get_system_prompt(agent: str, system_override: str = None) -> str:
@@ -372,13 +372,7 @@ async def _run_bash(command: str, workdir: str = None) -> str:
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=BASH_TIMEOUT)
     except asyncio.TimeoutError:
-        if sys.platform == "win32":
-            _windows_kill_tree(proc.pid)
-        else:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
+        _windows_kill_tree(proc.pid)
         try:
             await asyncio.wait_for(proc.communicate(), timeout=KILL_GRACE)
         except Exception:
@@ -458,8 +452,7 @@ async def _exec_tool(name: str, args: dict, workdir: str = None, allow_dangerous
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=25)
                 return stdout.decode("utf-8", "replace") or "(no matches)"
             except asyncio.TimeoutError:
-                if sys.platform == "win32":
-                    _windows_kill_tree(proc.pid)
+                _windows_kill_tree(proc.pid)
                 return "[TIMEOUT] grep_search exceeded 25s"
 
         elif name == "list_dir":
@@ -703,7 +696,7 @@ async def _run_agent_loop(
         if job_id:
             await asyncio.to_thread(db_module.finish_job, job_id, "done", result=final)
 
-    logger.info(f"[{aid}] done steps={step} cost=${total_cost:.6f}")
+    logger.info(f"[{aid}] done steps={step} tokens={int(total_cost)}")
     return f"{final}\n\n[steps: {step}, cost: ${total_cost:.6f}]"
 
 
