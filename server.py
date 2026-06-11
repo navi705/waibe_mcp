@@ -641,7 +641,12 @@ async def _run_agent_loop(
                 await asyncio.to_thread(
                     db_module.append_trace, job_id, aid, step, name, args_preview, result_preview
                 )
-            if len(result) > MAX_TOOL_RESULT:
+            # Skip truncation if agent is reading a tool_results file (full content is the point)
+            _is_tool_results_read = (
+                name == "read_file"
+                and str(TOOL_RESULTS_DIR) in str(args.get("path", ""))
+            )
+            if len(result) > MAX_TOOL_RESULT and not _is_tool_results_read:
                 fname = f"{job_id or uuid.uuid4().hex[:8]}-s{step}-{name}-{tc['id'][:8]}.txt"
                 result_file = TOOL_RESULTS_DIR / fname
                 try:
