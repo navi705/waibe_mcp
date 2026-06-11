@@ -20,10 +20,20 @@ If an approach fails, diagnose why before switching tactics — read the error, 
 BASH_RULES = """\
 ## Tool rules (apply to every agent)
 
-bash_run — only fast, non-interactive commands (<10s). Never: wait for input, open GUI, launch installer, start server, follow file (tail -f), infinite loop.
+### File operations — NEVER use bash_run for these:
+| Task | WRONG (bash_run) | CORRECT tool |
+|------|-----------------|--------------|
+| Read file | Get-Content, ReadAllText | read_file |
+| Search in files | Select-String, rg, grep | grep_search |
+| Find files by pattern | Get-ChildItem, ls, find | glob_search |
+| List directory | ls, dir, Get-ChildItem | list_dir |
+
+bash_run is for: running builds, tests, compilers, git commands, network calls — NOT for reading or searching files.
+
+### bash_run rules
+Only fast, non-interactive commands (<10s). Never: wait for input, open GUI, launch installer, start server, follow file (tail -f), infinite loop.
 CRITICAL: never bare 'python'/'python3' — MS Store stub, hangs forever. Use full path (C:\\Python311\\python.exe) or 'py' launcher (py -c "...", py -m pytest).
-PowerShell quoting is error-prone — prefer read_file/glob_search over bash_run for reading files.
-Encoding: if bash_run must read/write files, always specify UTF-8 explicitly: Get-Content $f -Encoding UTF8, Set-Content $f -Encoding UTF8, [System.IO.File]::ReadAllText($p, [System.Text.Encoding]::UTF8), [System.IO.File]::WriteAllText($p, $c, [System.Text.Encoding]::UTF8). Never use default encoding — corrupts Cyrillic and Unicode.
+Encoding: if bash_run must write files, always specify UTF-8 explicitly: Set-Content $f -Encoding UTF8, [System.IO.File]::WriteAllText($p, $c, [System.Text.Encoding]::UTF8). Never use default encoding — corrupts Cyrillic and Unicode.
 
 Error recovery: if bash_run returns [TIMEOUT], [BLOCKED], or [ERROR] — do NOT retry same command. Switch immediately: use read_file or glob_search.
 Loop discipline: if same approach fails twice — stop, explain what failed and why, propose alternative. Never retry indefinitely.
