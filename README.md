@@ -80,15 +80,35 @@ claude mcp add -s user waibee-mcp python "C:\path\to\waibee_mcp\server.py"
 
 Verify: `claude mcp list` → `waibee-mcp Connected`
 
-### 4. Add to CLAUDE.md
+### 4. Configure Claude Code
 
-Copy `CLAUDE_USAGE.md` into `~/.claude/CLAUDE.md`.
+**Option A — CLAUDE.md (full rules always in context)**
+
+Copy `CLAUDE_USAGE.md` into `~/.claude/CLAUDE.md`. Waibee auto-toggles on session start.
+
+**Option B — `/waibee` skill (recommended)**
+
+Zero context overhead — rules only load when explicitly enabled.
+
+1. Add a minimal entry to `~/.claude/CLAUDE.md`:
+
+```markdown
+## waibee_mcp
+Waibee OFF by default. Type `/waibee` to toggle on/off.
+When enabled: follow ALL rules injected by the `/waibee` skill.
+```
+
+2. Copy the skill file to your global commands directory:
+
+```bash
+cp skills/waibee.md ~/.claude/commands/waibee.md
+```
 
 ### 5. Restart Claude Code and enable
 
-```
-waibee_toggle(True)
-```
+**Option A:** Claude calls `waibee_toggle()` automatically on session start.
+
+**Option B:** type `/waibee` in chat — Claude toggles on and injects all rules into the session. Type `/waibee` again to disable.
 
 ## Usage
 
